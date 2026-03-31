@@ -1,4 +1,4 @@
-import { readMessages, searchMessages, listContacts, inbox, formatReactions } from "./src/db";
+import { readMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, formatReactions } from "./src/db";
 import { sendMessage } from "./src/send";
 import { lookupContact, lookupContacts, isDirectRecipient, resolveIdentifiers } from "./src/contacts";
 
@@ -209,44 +209,68 @@ async function main() {
         process.exit(1);
       }
       const limit = parseInt(process.argv[4]) || 25;
-      const messages = searchMessages(keyword, limit);
+      const results = searchMessagesWithContext(keyword, limit);
 
-      const senderIds = messages
-        .filter((m) => !m.is_from_me)
-        .map((m) => m.sender);
-      const reactionSenderIds2 = messages
-        .flatMap((m) => m.reactions ?? [])
-        .map((r) => r.sender)
-        .filter((s) => s !== "You");
-      const senderMap = resolveIdentifiers([...senderIds, ...reactionSenderIds2]);
+      // Count total matches and conversations
+      const totalMatches = results.reduce((sum, r) => sum + r.matchIndices.length, 0);
+      const convCount = results.length;
 
-      const now = Date.now();
+      // Collect all identifiers for batch resolution
+      const allIds = results.flatMap((r) => [
+        ...r.participants,
+        ...r.messages.filter((m) => !m.is_from_me).map((m) => m.sender),
+        ...r.messages.flatMap((m) => m.reactions ?? []).map((rx) => rx.sender).filter((s) => s !== "You"),
+      ]);
+      const nameMap = resolveIdentifiers(allIds);
+
+      // Resolve chat names
+      for (const result of results) {
+        const isRawIds =
+          result.chat === result.participants.join(", ") ||
+          result.chat === result.participants[0];
+        if (isRawIds) {
+          result.chat = result.participants
+            .map((id) => nameMap.get(id) ?? id)
+            .join(", ");
+        }
+      }
 
       console.log();
-      console.log(`  Found ${messages.length} messages matching "${keyword}"`);
-      console.log(`  ${"─".repeat(50)}`);
-      for (const msg of messages.reverse()) {
-        const d = new Date(msg.timestamp);
-        const diffDays = Math.floor((now - d.getTime()) / 86_400_000);
-        let time: string;
-        if (diffDays === 0)
-          time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-        else if (diffDays === 1)
-          time = "Yesterday " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-        else
-          time = d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
-            " " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      console.log(
+        `  Found ${totalMatches} message${totalMatches !== 1 ? "s" : ""} matching "${keyword}" in ${convCount} conversation${convCount !== 1 ? "s" : ""}`
+      );
 
-        const sender = msg.is_from_me
-          ? "Me"
-          : (senderMap.get(msg.sender) ?? msg.sender);
-        const text = msg.text ?? "(no content)";
-        const reactions = msg.reactions ? ` ${formatReactions(msg.reactions, senderMap)}` : "";
-
-        console.log(`  ${sender}  ${time}`);
-        console.log(`    ${text}${reactions}`);
+      for (const result of results) {
+        const headerLine = `── ${result.chat} `;
+        const pad = Math.max(0, 50 - headerLine.length);
         console.log();
+        console.log(`  ${headerLine}${"─".repeat(pad)}`);
+
+        for (let i = 0; i < result.messages.length; i++) {
+          const msg = result.messages[i];
+          const isMatch = result.matchIndices.includes(i);
+          const d = new Date(msg.timestamp);
+          const time =
+            d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
+            ", " +
+            d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+
+          const sender = msg.is_from_me
+            ? "Me"
+            : (nameMap.get(msg.sender) ?? msg.sender);
+          const text = msg.text ?? "(no content)";
+          const reactions = msg.reactions
+            ? ` ${formatReactions(msg.reactions, nameMap)}`
+            : "";
+
+          const marker = isMatch ? "▶ " : "  ";
+
+          console.log(`    ${sender}  ${time}`);
+          console.log(`  ${marker}  ${text}${reactions}`);
+        }
       }
+
+      console.log();
       break;
     }
     case "contacts": {

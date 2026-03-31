@@ -398,6 +398,186 @@ export function searchMessages(keyword: string, limit = 25): Message[] {
   }
 }
 
+export interface SearchResult {
+  chat: string;
+  participants: string[];
+  messages: Message[];
+  matchIndices: number[];
+}
+
+export function searchMessagesWithContext(
+  keyword: string,
+  limit = 25,
+  contextSize = 2
+): SearchResult[] {
+  const db = openChatDB();
+  try {
+    // Step 1: Find matching message ROWIDs and their chat associations
+    const matchRows = db
+      .query(
+        `SELECT
+          m.ROWID as msg_rowid,
+          m.guid,
+          m.date as coredate,
+          cmj.chat_id
+        FROM message m
+        JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+        WHERE (m.associated_message_type = 0 OR m.associated_message_type IS NULL)
+          AND (m.text LIKE ? OR m.attributedBody LIKE ?)
+        ORDER BY m.date DESC
+        LIMIT ?`
+      )
+      .all(`%${keyword}%`, `%${keyword}%`, limit) as any[];
+
+    if (matchRows.length === 0) return [];
+
+    // Step 2: Group matches by chat_id, collecting the message ROWIDs
+    const chatMatches = new Map<number, { rowids: number[]; guids: string[] }>();
+    for (const row of matchRows) {
+      const entry = chatMatches.get(row.chat_id) ?? { rowids: [], guids: [] };
+      entry.rowids.push(row.msg_rowid);
+      entry.guids.push(row.guid);
+      chatMatches.set(row.chat_id, entry);
+    }
+
+    const results: SearchResult[] = [];
+
+    for (const [chatId, { rowids, guids }] of chatMatches) {
+      // Get chat metadata
+      const chatRow = db
+        .query(
+          `SELECT c.display_name, c.chat_identifier, c.style
+           FROM chat c WHERE c.ROWID = ?`
+        )
+        .get(chatId) as any;
+
+      // Get participants
+      const handles = db
+        .query(
+          `SELECT h.id FROM chat_handle_join chj
+           JOIN handle h ON h.ROWID = chj.handle_id
+           WHERE chj.chat_id = ?`
+        )
+        .all(chatId) as any[];
+      const participants = handles.map((h: any) => h.id as string);
+
+      let chatName = chatRow?.display_name;
+      if (!chatName) {
+        if (chatRow?.style === 43) {
+          chatName = participants.join(", ");
+        } else {
+          chatName = chatRow?.chat_identifier ?? "Unknown";
+        }
+      }
+
+      // Step 3: For each match, find context window via date-ordered position
+      // Build merged ranges of message ROWIDs we need to fetch
+      const allContextRowids = new Set<number>();
+      const matchRowidSet = new Set(rowids);
+
+      for (const rowid of rowids) {
+        // Get messages before and after the match within this chat
+        const before = db
+          .query(
+            `SELECT m.ROWID as msg_rowid
+             FROM message m
+             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID AND cmj.chat_id = ?
+             WHERE (m.associated_message_type = 0 OR m.associated_message_type IS NULL)
+               AND m.date < (SELECT date FROM message WHERE ROWID = ?)
+             ORDER BY m.date DESC
+             LIMIT ?`
+          )
+          .all(chatId, rowid, contextSize) as any[];
+
+        const after = db
+          .query(
+            `SELECT m.ROWID as msg_rowid
+             FROM message m
+             JOIN chat_message_join cmj ON cmj.message_id = m.ROWID AND cmj.chat_id = ?
+             WHERE (m.associated_message_type = 0 OR m.associated_message_type IS NULL)
+               AND m.date > (SELECT date FROM message WHERE ROWID = ?)
+             ORDER BY m.date ASC
+             LIMIT ?`
+          )
+          .all(chatId, rowid, contextSize) as any[];
+
+        allContextRowids.add(rowid);
+        for (const r of before) allContextRowids.add(r.msg_rowid);
+        for (const r of after) allContextRowids.add(r.msg_rowid);
+      }
+
+      // Step 4: Fetch full message data for all context rowids
+      const placeholders = [...allContextRowids].map(() => "?").join(",");
+      const msgRows = db
+        .query(
+          `SELECT
+            m.ROWID as msg_rowid,
+            m.guid,
+            m.date as coredate,
+            m.is_from_me,
+            m.text,
+            m.attributedBody,
+            m.cache_has_attachments,
+            m.associated_message_type,
+            m.associated_message_emoji,
+            m.balloon_bundle_id,
+            m.is_audio_message,
+            h.id as handle_id,
+            a.mime_type,
+            a.transfer_name
+          FROM message m
+          LEFT JOIN handle h ON m.handle_id = h.ROWID
+          LEFT JOIN message_attachment_join maj ON maj.message_id = m.ROWID
+          LEFT JOIN attachment a ON a.ROWID = maj.attachment_id
+          WHERE m.ROWID IN (${placeholders})
+          GROUP BY m.ROWID
+          ORDER BY m.date ASC`
+        )
+        .all(...allContextRowids) as any[];
+
+      // Build messages array and track which indices are matches
+      const msgGuids = msgRows.map((r) => r.guid as string);
+      const tapbackMap = fetchTapbacksForGuids(db, msgGuids);
+
+      const messages: Message[] = [];
+      const matchIndices: number[] = [];
+
+      for (let i = 0; i < msgRows.length; i++) {
+        const row = msgRows[i];
+        const tapbacks = tapbackMap.get(row.guid);
+        messages.push({
+          timestamp: coredateToISO(row.coredate),
+          sender: row.is_from_me ? "Me" : (row.handle_id ?? "Unknown"),
+          text: resolveText(row),
+          is_from_me: !!row.is_from_me,
+          reactions: tapbacks ? buildReactions(tapbacks) ?? undefined : undefined,
+        });
+        if (matchRowidSet.has(row.msg_rowid)) {
+          matchIndices.push(i);
+        }
+      }
+
+      results.push({
+        chat: chatName,
+        participants,
+        messages,
+        matchIndices,
+      });
+    }
+
+    // Sort results by most recent match first
+    results.sort((a, b) => {
+      const aTime = a.matchIndices.length > 0 ? a.messages[a.matchIndices[0]].timestamp : "";
+      const bTime = b.matchIndices.length > 0 ? b.messages[b.matchIndices[0]].timestamp : "";
+      return bTime.localeCompare(aTime);
+    });
+
+    return results;
+  } finally {
+    db.close();
+  }
+}
+
 export interface Contact {
   id: string;
   messageCount: number;
