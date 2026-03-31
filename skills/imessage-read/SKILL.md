@@ -1,6 +1,6 @@
 ---
 name: imessage-read
-description: Read recent iMessages, optionally filtered by contact
+description: Read messages by contact
 ---
 
 Read recent messages using the imessage-tools CLI.

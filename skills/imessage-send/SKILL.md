@@ -1,6 +1,6 @@
 ---
 name: imessage-send
-description: Send an iMessage/SMS/RCS to a contact by name or phone number
+description: Send a message by name or number
 ---
 
 Send a message using the imessage-tools CLI.

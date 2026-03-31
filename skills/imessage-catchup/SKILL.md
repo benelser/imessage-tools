@@ -1,6 +1,6 @@
 ---
 name: imessage-catchup
-description: Show messages received since you were last active — your "what did I miss" view
+description: What did I miss? New msgs since last sent
 ---
 
 Show messages received since the user's last sent message using the imessage-tools CLI.

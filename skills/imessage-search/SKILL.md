@@ -1,6 +1,6 @@
 ---
 name: imessage-search
-description: Search iMessage history by keyword
+description: Search messages by keyword
 ---
 
 Search messages using the imessage-tools CLI.

@@ -1,6 +1,6 @@
 ---
 name: imessage-inbox
-description: Show iMessage conversation threads like the Messages sidebar
+description: Inbox — recent threads
 ---
 
 Show the inbox/conversation list using the imessage-tools CLI.
