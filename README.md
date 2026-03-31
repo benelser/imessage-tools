@@ -10,10 +10,18 @@ A [Claude Code plugin](https://code.claude.com/docs/en/plugins) that lets you re
 
 ## Install
 
+Current release: **v2.0.0**
+
 ```
 /plugin marketplace add benelser/imessage-tools
 /plugin install imessage-tools@benelser-imessage-tools
 /reload-plugins
+```
+
+To pin to a specific release, add the marketplace with a tag:
+
+```
+/plugin marketplace add benelser/imessage-tools#v2.0.0
 ```
 
 ## Skills
