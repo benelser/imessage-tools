@@ -290,6 +290,8 @@ export interface Message {
   text: string | null;
   is_from_me: boolean;
   reactions?: Reaction[];
+  chat?: string;        // chat identifier (for grouping when reading across chats)
+  chatDisplay?: string; // display name or participant list
 }
 
 export function readMessages(limit = 20, contact?: string): Message[] {
@@ -313,11 +315,16 @@ export function readMessages(limit = 20, contact?: string): Message[] {
           m.is_audio_message,
           h.id as handle_id,
           a.mime_type,
-          a.transfer_name
+          a.transfer_name,
+          c.chat_identifier,
+          c.display_name as chat_display_name,
+          c.style as chat_style
         FROM message m
         LEFT JOIN handle h ON m.handle_id = h.ROWID
         LEFT JOIN message_attachment_join maj ON maj.message_id = m.ROWID
         LEFT JOIN attachment a ON a.ROWID = maj.attachment_id
+        LEFT JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+        LEFT JOIN chat c ON c.ROWID = cmj.chat_id
         ${whereClause}
         GROUP BY m.ROWID
         ORDER BY m.date DESC
@@ -332,6 +339,28 @@ export function readMessages(limit = 20, contact?: string): Message[] {
     // Fetch tapbacks for these messages
     const tapbackMap = fetchTapbacksForGuids(db, parentGuids);
 
+    // For unnamed group chats, resolve participant names
+    const chatDisplayCache = new Map<string, string>();
+    for (const row of regularRows) {
+      const chatId = row.chat_identifier;
+      if (!chatId || chatDisplayCache.has(chatId)) continue;
+      if (row.chat_display_name) {
+        chatDisplayCache.set(chatId, row.chat_display_name);
+      } else if (row.chat_style === 43) {
+        // Group chat without a display name — fetch participants
+        const handles = db
+          .query(
+            `SELECT h.id FROM chat_handle_join chj
+             JOIN handle h ON h.ROWID = chj.handle_id
+             JOIN chat c ON c.ROWID = chj.chat_id
+             WHERE c.chat_identifier = ?`
+          )
+          .all(chatId) as any[];
+        const ids = handles.map((h: any) => h.id as string);
+        chatDisplayCache.set(chatId, ids.join(", ")); // will be resolved by caller
+      }
+    }
+
     return regularRows.map((row) => {
       const tapbacks = tapbackMap.get(row.guid);
       return {
@@ -340,6 +369,8 @@ export function readMessages(limit = 20, contact?: string): Message[] {
         text: truncate(resolveText(row)),
         is_from_me: !!row.is_from_me,
         reactions: tapbacks ? buildReactions(tapbacks) ?? undefined : undefined,
+        chat: row.chat_identifier || undefined,
+        chatDisplay: chatDisplayCache.get(row.chat_identifier) || row.chat_display_name || undefined,
       };
     });
   } finally {
