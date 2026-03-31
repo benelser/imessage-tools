@@ -1,41 +1,25 @@
 #!/usr/bin/env bun
 /**
- * Build script: generates platform-specific plugin directories from skills-src/.
+ * Build script: generates Codex-specific plugin artifacts.
+ * skills/ is the single source of truth — shared across both platforms.
  *
  * Usage: bun run scripts/build.ts
  *
  * Outputs:
- *   skills/                    — universal skills (copied from skills-src/)
- *   .claude-plugin/plugin.json — Claude Code manifest
- *   .codex-plugin/plugin.json  — Codex CLI manifest
- *   .claude-plugin/marketplace.json — Claude Code marketplace
- *   .agents/plugins/marketplace.json — Codex marketplace
+ *   .codex-plugin/plugin.json          — Codex manifest
+ *   .agents/plugins/marketplace.json   — Codex personal marketplace
  */
 
-import { cpSync, mkdirSync, writeFileSync, readdirSync, existsSync } from "fs";
+import { mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 
 const ROOT = join(import.meta.dir, "..");
-const VERSION = JSON.parse(await Bun.file(join(ROOT, ".claude-plugin/plugin.json")).text()).version;
+const pkg = JSON.parse(await Bun.file(join(ROOT, ".claude-plugin/plugin.json")).text());
+const VERSION = pkg.version;
 
-console.log(`Building imessage-tools v${VERSION}...\n`);
+console.log(`Building Codex artifacts for imessage-tools v${VERSION}...\n`);
 
-// 1. Copy skills-src/ → skills/ (universal, no platform-specific paths)
-const skillsSrc = join(ROOT, "skills-src");
-const skillsDst = join(ROOT, "skills");
-
-if (existsSync(skillsSrc)) {
-  // Clean and copy
-  for (const skill of readdirSync(skillsSrc)) {
-    const src = join(skillsSrc, skill);
-    const dst = join(skillsDst, skill);
-    mkdirSync(dst, { recursive: true });
-    cpSync(src, dst, { recursive: true });
-  }
-  console.log(`  skills/ ← skills-src/ (${readdirSync(skillsSrc).length} skills)`);
-}
-
-// 2. Generate .codex-plugin/plugin.json
+// 1. Generate .codex-plugin/plugin.json
 const codexManifest = {
   name: "imessage-tools",
   version: VERSION,
@@ -63,39 +47,23 @@ const codexManifest = {
 };
 
 mkdirSync(join(ROOT, ".codex-plugin"), { recursive: true });
-writeFileSync(
-  join(ROOT, ".codex-plugin/plugin.json"),
-  JSON.stringify(codexManifest, null, 2) + "\n"
-);
+writeFileSync(join(ROOT, ".codex-plugin/plugin.json"), JSON.stringify(codexManifest, null, 2) + "\n");
 console.log("  .codex-plugin/plugin.json");
 
-// 3. Generate .agents/plugins/marketplace.json (Codex marketplace)
+// 2. Generate .agents/plugins/marketplace.json
 const codexMarketplace = {
   name: "imessage-tools",
-  interface: {
-    displayName: "iMessage Tools"
-  },
-  plugins: [
-    {
-      name: "imessage-tools",
-      source: {
-        source: "local",
-        path: "./plugins/imessage-tools"
-      },
-      policy: {
-        installation: "AVAILABLE",
-        authentication: "ON_INSTALL"
-      },
-      category: "Productivity"
-    }
-  ]
+  interface: { displayName: "iMessage Tools" },
+  plugins: [{
+    name: "imessage-tools",
+    source: { source: "local", path: "./plugins/imessage-tools" },
+    policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
+    category: "Productivity"
+  }]
 };
 
 mkdirSync(join(ROOT, ".agents/plugins"), { recursive: true });
-writeFileSync(
-  join(ROOT, ".agents/plugins/marketplace.json"),
-  JSON.stringify(codexMarketplace, null, 2) + "\n"
-);
+writeFileSync(join(ROOT, ".agents/plugins/marketplace.json"), JSON.stringify(codexMarketplace, null, 2) + "\n");
 console.log("  .agents/plugins/marketplace.json");
 
 console.log("\nBuild complete.");

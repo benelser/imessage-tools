@@ -78,7 +78,6 @@ async function deployCodex() {
     !src.includes("/.cursor") &&
     !src.includes("/hooks/") &&
     !src.includes("/scripts/") &&
-    !src.includes("/skills-src/") &&
     !src.includes("/CLAUDE.md");
 
   // 1. Populate marketplace source dir (for discovery in /plugins UI)
