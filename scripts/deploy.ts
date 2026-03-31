@@ -79,6 +79,15 @@ async function deployCodex() {
   // Install deps in plugin dir
   await run(["bun", "install", "--cwd", pluginDir], "bun install");
 
+  // Create symlink from marketplace-relative path to actual plugin dir
+  // Codex resolves source.path relative to marketplace root (~/.agents/plugins/)
+  const marketplacePluginsDir = join(process.env.HOME!, ".agents/plugins/plugins");
+  const symlinkPath = join(marketplacePluginsDir, "imessage-tools");
+  mkdirSync(marketplacePluginsDir, { recursive: true });
+  try { Bun.spawnSync(["rm", "-f", symlinkPath]); } catch {}
+  Bun.spawnSync(["ln", "-sfn", pluginDir, symlinkPath]);
+  console.log(`  Symlinked ${symlinkPath} → ${pluginDir}`);
+
   // Create/update personal marketplace
   mkdirSync(join(process.env.HOME!, ".agents/plugins"), { recursive: true });
 
@@ -89,12 +98,12 @@ async function deployCodex() {
     } catch {}
   }
 
-  // Upsert our plugin entry
+  // Upsert our plugin entry — path must be relative with ./ prefix
   const existing = marketplace.plugins.findIndex((p: any) => p.name === "imessage-tools");
   const entry = {
     name: "imessage-tools",
-    source: { source: "local", path: pluginDir },
-    policy: { installation: "AVAILABLE" },
+    source: { source: "local", path: "./plugins/imessage-tools" },
+    policy: { installation: "AVAILABLE", authentication: "ON_INSTALL" },
     category: "Productivity"
   };
   if (existing >= 0) {
