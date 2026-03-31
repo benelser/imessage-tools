@@ -206,16 +206,37 @@ function extractFromAttributedBody(blob: Uint8Array | null): string | null {
   idx += 5;
   if (idx >= blob.length) return null;
 
-  // Next byte is the string length
-  const len = blob[idx];
+  // Read length — NSKeyedArchiver uses variable-length encoding:
+  // - 0x00-0x7F: single byte length
+  // - 0x81: next 1 byte is the length
+  // - 0x82: next 2 bytes (big-endian) are the length
+  // - 0x83: next 3 bytes, etc.
+  let len = blob[idx];
   idx += 1;
+  if (len === 0x81) {
+    if (idx >= blob.length) return null;
+    len = blob[idx];
+    idx += 1;
+  } else if (len === 0x82) {
+    if (idx + 1 >= blob.length) return null;
+    len = (blob[idx] << 8) | blob[idx + 1];
+    idx += 2;
+  } else if (len === 0x83) {
+    if (idx + 2 >= blob.length) return null;
+    len = (blob[idx] << 16) | (blob[idx + 1] << 8) | blob[idx + 2];
+    idx += 3;
+  } else if (len > 0x7F) {
+    // Unknown multi-byte encoding — skip
+    return null;
+  }
+
   if (idx + len > blob.length) return null;
 
   const text = new TextDecoder("utf-8", { fatal: false }).decode(
     blob.slice(idx, idx + len)
   );
-  // Strip the object replacement character (U+FFFC) used for inline attachments
-  return text.replace(/\uFFFC/g, "").trim() || null;
+  // Strip object replacement char (U+FFFC) and replacement char (U+FFFD)
+  return text.replace(/[\uFFFC\uFFFD]/g, "").trim() || null;
 }
 
 /**
@@ -242,7 +263,7 @@ function resolveText(row: any): string | null {
 
   // Try m.text first (strip U+FFFC object replacement chars used for inline attachments)
   if (row.text) {
-    const cleaned = row.text.replace(/\uFFFC/g, "").trim();
+    const cleaned = row.text.replace(/[\uFFFC\uFFFD]/g, "").trim();
     if (cleaned) return cleaned;
   }
 
