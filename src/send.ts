@@ -33,7 +33,10 @@ export async function sendToGroup(
 
 /**
  * Create a group chat by sending an initial message to multiple recipients.
- * Uses AppleScript to build a buddy list and send to all at once.
+ * Uses the imessage:// URL scheme to open a compose window with all recipients
+ * and the message body, then System Events to press Enter to send.
+ * This is the only reliable approach — AppleScript's `send` doesn't accept
+ * a list of participants for group creation.
  */
 export async function createGroupChat(
   recipients: string[],
@@ -43,22 +46,29 @@ export async function createGroupChat(
     throw new Error("Group chat requires at least 2 recipients");
   }
 
-  const escapedMessage = message.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-
-  const buddyLines = recipients
-    .map((phone) => {
-      const escaped = phone.replace(/"/g, '\\"');
-      return `    set end of buddyList to participant "${escaped}" of imessageService`;
-    })
-    .join("\n");
+  const addressList = recipients.join(",");
+  // URL-encode the message body
+  const encodedBody = encodeURIComponent(message);
 
   const script = `
-    tell application "Messages"
-      set imessageService to 1st account whose service type = iMessage
-      set buddyList to {}
-${buddyLines}
-      send "${escapedMessage}" to buddyList
+    -- Save the frontmost app to restore focus after
+    tell application "System Events"
+      set frontApp to name of first application process whose frontmost is true
     end tell
+
+    tell application "Messages" to activate
+    delay 0.3
+    open location "imessage://open?addresses=${addressList}&body=${encodedBody}"
+    delay 2
+    tell application "System Events"
+      tell process "Messages"
+        key code 36
+      end tell
+    end tell
+
+    -- Restore focus to the original app
+    delay 0.5
+    tell application frontApp to activate
   `;
 
   const proc = Bun.spawn(["osascript", "-e", script], {
