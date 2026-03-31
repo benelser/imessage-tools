@@ -1,0 +1,17 @@
+{
+  "name": "imessage-tools",
+  "owner": {
+    "name": "belser"
+  },
+  "metadata": {
+    "description": "iMessage integration skills for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "imessage-tools",
+      "source": ".",
+      "description": "Read, search, and send iMessages directly from Claude Code",
+      "version": "1.0.0"
+    }
+  ]
+}

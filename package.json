@@ -1,0 +1,12 @@
+{
+  "name": "imessage-tools",
+  "module": "index.ts",
+  "type": "module",
+  "private": false,
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
