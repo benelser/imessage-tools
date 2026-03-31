@@ -38,9 +38,11 @@ Then restart Codex — the plugin will be enabled automatically.
 
 **Codex sandbox note:** Read commands (inbox, read, search, catchup) work in any sandbox mode. Send commands require **Full access** sandbox because AppleScript needs to control Messages.app. Set this in Codex Settings > Sandbox settings, or pass `--sandbox danger-full-access` for non-interactive `codex exec`.
 
-### Global CLI (both platforms)
+### Global CLI
 
-After installing on either platform, run `bun link` from the repo to register `imessage-tools` as a global command. Skills on both Claude Code and Codex use this global CLI — no platform-specific paths.
+Claude Code automatically registers `imessage-tools` as a global command on first session start (via a SessionStart hook). No manual step needed.
+
+For Codex, `bun link` is included in the install flow above.
 
 ## Skills
 
