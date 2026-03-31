@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 import { readMessages, readGroupMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, catchup, formatReactions, findGroupChats } from "./src/db";
 import { sendMessage, sendToGroup, createGroupChat } from "./src/send";
 import { lookupContact, lookupContacts, isDirectRecipient, resolveIdentifiers } from "./src/contacts";

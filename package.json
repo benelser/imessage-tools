@@ -3,6 +3,9 @@
   "module": "index.ts",
   "type": "module",
   "private": false,
+  "bin": {
+    "imessage-tools": "./index.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

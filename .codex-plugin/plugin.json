@@ -1,0 +1,36 @@
+{
+  "name": "imessage-tools",
+  "version": "2.8.0",
+  "description": "Read, search, and send iMessages directly from Codex CLI",
+  "author": {
+    "name": "belser"
+  },
+  "homepage": "https://github.com/benelser/imessage-tools",
+  "license": "MIT",
+  "keywords": [
+    "imessage",
+    "messages",
+    "sms",
+    "macos"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "iMessage Tools",
+    "shortDescription": "Read, search, and send iMessages",
+    "longDescription": "Full iMessage integration — inbox, conversation view, search with context, catchup, send (1:1, 1:many, group), and group creation.",
+    "developerName": "belser",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write",
+      "Interactive"
+    ],
+    "websiteURL": "https://github.com/benelser/imessage-tools",
+    "brandColor": "#34C759",
+    "defaultPrompt": [
+      "Check my recent messages",
+      "What did I miss?",
+      "Send a message to..."
+    ]
+  }
+}
