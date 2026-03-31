@@ -10,7 +10,7 @@ A [Claude Code plugin](https://code.claude.com/docs/en/plugins) that lets you re
 
 ## Install
 
-Current release: **v2.4.0**
+Current release: **v2.5.0**
 
 ```
 /plugin marketplace add benelser/imessage-tools
@@ -21,7 +21,7 @@ Current release: **v2.4.0**
 To pin to a specific release, add the marketplace with a tag:
 
 ```
-/plugin marketplace add benelser/imessage-tools#v2.4.0
+/plugin marketplace add benelser/imessage-tools#v2.5.0
 ```
 
 ## Skills
@@ -148,6 +148,46 @@ Supports three modes: 1:1, 1:many (individual sends), and group chat. Resolves c
 ```
 The group must have a display name set in Messages.app (tap group info to name it). Unnamed groups can't be targeted by name.
 
+### [`/imessage-group-create`](skills/imessage-group-create/SKILL.md) — Create a group chat
+
+Interactive, human-in-the-loop group creation. Claude walks you through each step and never sends without your explicit confirmation.
+
+```
+> /imessage-group-create
+```
+
+Claude will:
+
+1. **Ask** who should be in the group
+2. **Resolve** each name against your Contacts, flagging ambiguous or missing matches
+3. **Present** the roster and let you `+Name` / `-Name` to adjust
+4. **Confirm** before creating — only proceeds on your explicit "yes"
+5. **Ask** for the first message
+6. **Create** the group by sending to all members
+
+```
+Resolving contacts...
+
+  1. Jane Doe (+15551234567)
+  2. John Smith (+15559876543)
+  3. +15550001111
+
+Look good? (yes / +Name / -Name)
+> +Bob
+
+  4. Bob Jones (+15550009999)
+
+Look good? (yes / +Name / -Name)
+> yes
+
+First message?
+> Draft is Saturday 6pm!
+
+✔ Group created with 4 members
+```
+
+Note: group naming must be done in Messages.app after creation (AppleScript limitation).
+
 ## Standalone CLI
 
 Works without Claude Code too:
@@ -163,6 +203,8 @@ bun run index.ts contacts
 bun run index.ts send "Jane Doe" "Hey, what's up?"
 bun run index.ts send "Jane, John" "Meeting at 3"
 bun run index.ts send --group "Work Chat" "Hello team!"
+bun run index.ts create-group resolve "Jane, John, Bob"
+bun run index.ts create-group send "+15551234567,+15559876543" "Hey team!"
 ```
 
 ## How it works
