@@ -1,4 +1,4 @@
-import { readMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, catchup, formatReactions, findGroupChats } from "./src/db";
+import { readMessages, readGroupMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, catchup, formatReactions, findGroupChats } from "./src/db";
 import { sendMessage, sendToGroup } from "./src/send";
 import { lookupContact, lookupContacts, isDirectRecipient, resolveIdentifiers } from "./src/contacts";
 
@@ -96,6 +96,104 @@ async function main() {
       break;
     }
     case "read": {
+      // Check for --group flag
+      if (process.argv[3] === "--group") {
+        const groupName = process.argv[4];
+        const limit = parseInt(process.argv[5]) || 30;
+        if (!groupName) {
+          console.error('Error: group name required\nUsage: read --group "Group Name" [limit]');
+          process.exit(1);
+        }
+        const groupMatches = findGroupChats(groupName);
+        if (groupMatches.length === 0) {
+          console.error(`No group chat found matching "${groupName}"`);
+          process.exit(1);
+        }
+        let target = groupMatches[0];
+        if (groupMatches.length > 1) {
+          const exact = groupMatches.find((m) => m.displayName.toLowerCase() === groupName.toLowerCase());
+          if (exact) {
+            target = exact;
+          } else {
+            console.log(`\nMultiple group chats match "${groupName}":\n`);
+            for (let i = 0; i < groupMatches.length; i++) {
+              console.log(`  ${i + 1}. ${groupMatches[i].displayName}`);
+            }
+            console.log(`\nBe more specific to select a group.`);
+            process.exit(1);
+          }
+        }
+        const groupMessages = readGroupMessages(target.chatIdentifier, limit);
+        const groupSenderIds = groupMessages.filter((m) => !m.is_from_me).map((m) => m.sender);
+        const groupReactionIds = groupMessages.flatMap((m) => m.reactions ?? []).map((r) => r.sender).filter((s) => s !== "You");
+        const groupSenderMap = resolveIdentifiers([...groupSenderIds, ...groupReactionIds]);
+
+        // Use single-conversation view with group name header
+        const WIDTH = process.stdout.columns || 80;
+        console.log();
+        console.log(`  ── ${target.displayName} ${"─".repeat(Math.max(0, WIDTH - target.displayName.length - 6))}`);
+        console.log();
+
+        // Reuse conversation-style display
+        const sorted = groupMessages.reverse();
+        let lastDate: string | null = null;
+        let lastSender: string | null = null;
+        let lastMsgTime = 0;
+
+        for (const msg of sorted) {
+          const d = new Date(msg.timestamp);
+          const dateStr = d.toDateString();
+          const now = new Date();
+          const yesterdayDate = new Date(now); yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+          const dayLbl = d.toDateString() === now.toDateString() ? "Today"
+            : d.toDateString() === yesterdayDate.toDateString() ? "Yesterday"
+            : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+
+          if (dateStr !== lastDate) {
+            if (lastDate !== null) console.log();
+            const label = `── ${dayLbl} ──`;
+            const pad = Math.max(0, Math.floor((WIDTH - label.length) / 2));
+            console.log(" ".repeat(pad) + label);
+            console.log();
+            lastDate = dateStr;
+            lastSender = null;
+            lastMsgTime = 0;
+          }
+
+          const sender = msg.is_from_me ? "Me" : (groupSenderMap.get(msg.sender) ?? msg.sender);
+          const senderKey = msg.is_from_me ? "__me__" : msg.sender;
+          const text = msg.text ?? "(no content)";
+          const reactions = msg.reactions ? ` ${formatReactions(msg.reactions, groupSenderMap)}` : "";
+          const msgTime = d.getTime();
+          const showTime = (msgTime - lastMsgTime) >= 30 * 60 * 1000;
+          const showSender = senderKey !== lastSender;
+          const timeStr = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+
+          if (msg.is_from_me) {
+            if (showSender && lastSender !== null) console.log();
+            const content = `${text}${reactions}`;
+            const timeSuffix = showTime ? `  ${timeStr}` : "";
+            const line = `${content}${timeSuffix}`;
+            const linePad = Math.max(0, WIDTH - line.length - 2);
+            console.log(" ".repeat(linePad) + line);
+          } else {
+            if (showSender) {
+              if (lastSender !== null) console.log();
+              console.log(showTime ? `${sender}  ${timeStr}` : sender);
+            } else if (showTime) {
+              console.log();
+              console.log(`${sender}  ${timeStr}`);
+            }
+            console.log(`    ${text}${reactions}`);
+          }
+
+          lastSender = senderKey;
+          lastMsgTime = msgTime;
+        }
+        console.log();
+        break;
+      }
+
       const limit = parseInt(process.argv[3]) || 20;
       const contact = process.argv[4];
       const messages = readMessages(limit, contact);
@@ -405,7 +503,7 @@ async function main() {
           );
           if (exact) {
             console.log(`Sending to group "${exact.displayName}"...`);
-            await sendToGroup(exact.chatIdentifier, groupMessage);
+            await sendToGroup(exact.guid, groupMessage);
             console.log(`Message sent to group "${exact.displayName}"`);
           } else {
             console.log(`\nMultiple group chats match "${groupName}":\n`);
@@ -417,7 +515,7 @@ async function main() {
           }
         } else {
           console.log(`Sending to group "${matches[0].displayName}"...`);
-          await sendToGroup(matches[0].chatIdentifier, groupMessage);
+          await sendToGroup(matches[0].guid, groupMessage);
           console.log(`Message sent to group "${matches[0].displayName}"`);
         }
         break;

@@ -7,16 +7,14 @@ export type ServiceType = "iMessage" | "SMS" | "RCS";
  * Uses AppleScript to target the chat by its full ID.
  */
 export async function sendToGroup(
-  chatIdentifier: string,
+  chatGuid: string,
   message: string
 ): Promise<void> {
   const escapedMessage = message.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 
-  // Group chats use the "any;+;" prefix in AppleScript IDs
-  const fullId = `iMessage;+;${chatIdentifier}`;
   const script = `
     tell application "Messages"
-      set targetChat to chat id "${fullId}"
+      set targetChat to chat id "${chatGuid}"
       send "${escapedMessage}" to targetChat
     end tell
   `;

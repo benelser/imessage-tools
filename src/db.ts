@@ -399,6 +399,57 @@ export function readMessages(limit = 20, contact?: string): Message[] {
   }
 }
 
+export function readGroupMessages(chatIdentifier: string, limit = 30): Message[] {
+  const db = openChatDB();
+  try {
+    const rows = db
+      .query(
+        `SELECT
+          m.guid,
+          m.date as coredate,
+          m.is_from_me,
+          m.text,
+          m.attributedBody,
+          m.cache_has_attachments,
+          m.associated_message_type,
+          m.associated_message_emoji,
+          m.balloon_bundle_id,
+          m.is_audio_message,
+          h.id as handle_id,
+          a.mime_type,
+          a.transfer_name
+        FROM message m
+        JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+        JOIN chat c ON c.ROWID = cmj.chat_id
+        LEFT JOIN handle h ON m.handle_id = h.ROWID
+        LEFT JOIN message_attachment_join maj ON maj.message_id = m.ROWID
+        LEFT JOIN attachment a ON a.ROWID = maj.attachment_id
+        WHERE c.chat_identifier = ?
+        GROUP BY m.ROWID
+        ORDER BY m.date DESC
+        LIMIT ?`
+      )
+      .all(chatIdentifier, limit) as any[];
+
+    const regularRows = rows.filter((r) => !r.associated_message_type);
+    const parentGuids = regularRows.map((r) => r.guid as string);
+    const tapbackMap = fetchTapbacksForGuids(db, parentGuids);
+
+    return regularRows.map((row) => {
+      const tapbacks = tapbackMap.get(row.guid);
+      return {
+        timestamp: coredateToISO(row.coredate),
+        sender: row.is_from_me ? "Me" : (row.handle_id ?? "Unknown"),
+        text: truncate(resolveText(row)),
+        is_from_me: !!row.is_from_me,
+        reactions: tapbacks ? buildReactions(tapbacks) ?? undefined : undefined,
+      };
+    });
+  } finally {
+    db.close();
+  }
+}
+
 export function searchMessages(keyword: string, limit = 25): Message[] {
   const db = openChatDB();
   try {
@@ -787,6 +838,7 @@ export function inbox(limit = 15): InboxThread[] {
 export interface GroupChatInfo {
   displayName: string;
   chatIdentifier: string;
+  guid: string; // AppleScript chat ID (e.g. "any;+;chat123...")
 }
 
 /**
@@ -798,7 +850,7 @@ export function findGroupChats(name: string): GroupChatInfo[] {
   try {
     const rows = db
       .query(
-        `SELECT display_name, chat_identifier
+        `SELECT display_name, chat_identifier, guid
          FROM chat
          WHERE style = 43
            AND display_name IS NOT NULL
@@ -811,6 +863,7 @@ export function findGroupChats(name: string): GroupChatInfo[] {
     return rows.map((r: any) => ({
       displayName: r.display_name,
       chatIdentifier: r.chat_identifier,
+      guid: r.guid,
     }));
   } finally {
     db.close();
