@@ -615,6 +615,9 @@ export interface InboxThread {
   participants: string[]; // raw identifiers for contact resolution
   timestamp: string;
   preview: string | null;
+  lastSender: string;     // raw handle_id of last message sender
+  lastIsFromMe: boolean;  // whether the last message was sent by the user
+  isGroup: boolean;       // whether the chat is a group chat (style === 43)
 }
 
 export function inbox(limit = 15): InboxThread[] {
@@ -702,10 +705,177 @@ export function inbox(limit = 15): InboxThread[] {
         participants,
         timestamp: coredateToISO(msg.coredate),
         preview,
+        lastSender: msg.is_from_me ? "Me" : (msg.handle_id ?? "Unknown"),
+        lastIsFromMe: !!msg.is_from_me,
+        isGroup: chat.style === 43,
       });
     }
 
     return results;
+  } finally {
+    db.close();
+  }
+}
+
+export interface CatchupThread {
+  chat: string;
+  participants: string[];
+  messages: Message[];
+  isGroup: boolean;
+}
+
+export interface CatchupResult {
+  awaySince: string;      // ISO timestamp of last sent message
+  awayDurationMs: number; // milliseconds since last sent message
+  threads: CatchupThread[];
+  totalMessages: number;
+}
+
+export function catchup(hours?: number): CatchupResult {
+  const db = openChatDB();
+  try {
+    const fallbackHours = hours ?? 4;
+
+    // Find the most recent message sent by the user
+    const lastSent = db
+      .query(
+        `SELECT m.date as coredate
+         FROM message m
+         WHERE m.is_from_me = 1
+         ORDER BY m.date DESC
+         LIMIT 1`
+      )
+      .get() as any;
+
+    let sinceDate: number; // coredate threshold
+    let awaySinceISO: string;
+
+    if (lastSent && !hours) {
+      sinceDate = lastSent.coredate;
+      awaySinceISO = coredateToISO(lastSent.coredate);
+    } else {
+      // Fall back to N hours ago
+      const unixThreshold = Date.now() / 1000 - fallbackHours * 3600;
+      sinceDate = (unixThreshold - CORE_DATA_EPOCH_OFFSET) * 1_000_000_000;
+      awaySinceISO = new Date(unixThreshold * 1000).toISOString();
+    }
+
+    const awayDurationMs = Date.now() - new Date(awaySinceISO).getTime();
+
+    // Find all received messages since the threshold, grouped by chat
+    const rows = db
+      .query(
+        `SELECT
+          m.guid,
+          m.date as coredate,
+          m.is_from_me,
+          m.text,
+          m.attributedBody,
+          m.cache_has_attachments,
+          m.associated_message_type,
+          m.associated_message_emoji,
+          m.balloon_bundle_id,
+          m.is_audio_message,
+          h.id as handle_id,
+          a.mime_type,
+          a.transfer_name,
+          cmj.chat_id
+        FROM message m
+        JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+        LEFT JOIN handle h ON m.handle_id = h.ROWID
+        LEFT JOIN message_attachment_join maj ON maj.message_id = m.ROWID
+        LEFT JOIN attachment a ON a.ROWID = maj.attachment_id
+        WHERE m.date > ?
+          AND m.is_from_me = 0
+          AND (m.associated_message_type = 0 OR m.associated_message_type IS NULL)
+        GROUP BY m.ROWID
+        ORDER BY m.date ASC`
+      )
+      .all(sinceDate) as any[];
+
+    if (rows.length === 0) {
+      return {
+        awaySince: awaySinceISO,
+        awayDurationMs,
+        threads: [],
+        totalMessages: 0,
+      };
+    }
+
+    // Group by chat_id
+    const chatGroups = new Map<number, any[]>();
+    for (const row of rows) {
+      const list = chatGroups.get(row.chat_id) ?? [];
+      list.push(row);
+      chatGroups.set(row.chat_id, list);
+    }
+
+    const threads: CatchupThread[] = [];
+
+    for (const [chatId, msgRows] of chatGroups) {
+      // Get chat metadata
+      const chatRow = db
+        .query(
+          `SELECT c.display_name, c.chat_identifier, c.style
+           FROM chat c WHERE c.ROWID = ?`
+        )
+        .get(chatId) as any;
+
+      const handles = db
+        .query(
+          `SELECT h.id FROM chat_handle_join chj
+           JOIN handle h ON h.ROWID = chj.handle_id
+           WHERE chj.chat_id = ?`
+        )
+        .all(chatId) as any[];
+      const participants = handles.map((h: any) => h.id as string);
+
+      let chatName = chatRow?.display_name;
+      if (!chatName) {
+        if (chatRow?.style === 43) {
+          chatName = participants.join(", ");
+        } else {
+          chatName = chatRow?.chat_identifier ?? "Unknown";
+        }
+      }
+
+      const guids = msgRows.map((r: any) => r.guid as string);
+      const tapbackMap = fetchTapbacksForGuids(db, guids);
+
+      const messages: Message[] = msgRows.map((row: any) => {
+        const tapbacks = tapbackMap.get(row.guid);
+        return {
+          timestamp: coredateToISO(row.coredate),
+          sender: row.handle_id ?? "Unknown",
+          text: resolveText(row),
+          is_from_me: false,
+          reactions: tapbacks ? buildReactions(tapbacks) ?? undefined : undefined,
+        };
+      });
+
+      threads.push({
+        chat: chatName,
+        participants,
+        messages,
+        isGroup: chatRow?.style === 43,
+      });
+    }
+
+    // Sort by most recent message in each thread
+    threads.sort((a, b) => {
+      const aLast = a.messages[a.messages.length - 1]?.timestamp ?? "";
+      const bLast = b.messages[b.messages.length - 1]?.timestamp ?? "";
+      return bLast.localeCompare(aLast);
+    });
+
+    const totalMessages = threads.reduce((sum, t) => sum + t.messages.length, 0);
+
+    return {
+      awaySince: awaySinceISO,
+      awayDurationMs,
+      threads,
+      totalMessages,
+    };
   } finally {
     db.close();
   }

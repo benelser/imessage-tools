@@ -1,4 +1,4 @@
-import { readMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, formatReactions } from "./src/db";
+import { readMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, catchup, formatReactions } from "./src/db";
 import { sendMessage } from "./src/send";
 import { lookupContact, lookupContacts, isDirectRecipient, resolveIdentifiers } from "./src/contacts";
 
@@ -11,6 +11,7 @@ Commands:
   inbox [limit]              Show conversations (like iMessage sidebar)
   read [limit] [contact]     Read recent messages
   search <keyword> [limit]   Search messages by keyword
+  catchup [hours]            Show messages since your last sent message
   contacts                   List all contacts by message count
   send <name-or-number> <message> [--sms|--rcs|--imessage]
                              Send a message (auto-detects service)
@@ -34,8 +35,11 @@ async function main() {
       const limit = parseInt(process.argv[3]) || 15;
       const threads = inbox(limit);
 
-      // Collect all participant identifiers for batch resolution
-      const allIds = threads.flatMap((t) => t.participants);
+      // Collect all participant identifiers for batch resolution (including last message senders)
+      const allIds = [
+        ...threads.flatMap((t) => t.participants),
+        ...threads.filter((t) => !t.lastIsFromMe).map((t) => t.lastSender),
+      ];
       const nameMap = resolveIdentifiers(allIds);
 
       // Format relative timestamps
@@ -75,7 +79,18 @@ async function main() {
           ? thread.chat.slice(0, COL - 3) + "..."
           : thread.chat;
         const time = formatTime(thread.timestamp);
-        const preview = thread.preview ?? "(no content)";
+        const rawPreview = thread.preview ?? "(no content)";
+
+        // Sender attribution for preview
+        let prefix = "";
+        if (thread.lastIsFromMe) {
+          prefix = "You: ";
+        } else if (thread.isGroup) {
+          const senderName = nameMap.get(thread.lastSender) ?? thread.lastSender;
+          prefix = `${senderName}: `;
+        }
+        // 1-on-1 from other: no prefix
+        const preview = `${prefix}${rawPreview}`;
 
         console.log(`  ${name.padEnd(COL)}  ${time}`);
         console.log(`    > ${preview}`);
@@ -270,6 +285,88 @@ async function main() {
         }
       }
 
+      console.log();
+      break;
+    }
+    case "catchup": {
+      const hoursArg = process.argv[3] ? parseFloat(process.argv[3]) : undefined;
+      const result = catchup(hoursArg);
+
+      // Collect all identifiers for batch resolution
+      const allCatchupIds = [
+        ...result.threads.flatMap((t) => t.participants),
+        ...result.threads.flatMap((t) => t.messages.filter((m) => !m.is_from_me).map((m) => m.sender)),
+        ...result.threads.flatMap((t) => t.messages.flatMap((m) => m.reactions ?? []).map((r) => r.sender).filter((s) => s !== "You")),
+      ];
+      const catchupNameMap = resolveIdentifiers(allCatchupIds);
+
+      // Resolve chat names
+      for (const thread of result.threads) {
+        const isRawIds =
+          thread.chat === thread.participants.join(", ") ||
+          thread.chat === thread.participants[0];
+        if (isRawIds) {
+          thread.chat = thread.participants
+            .map((id) => catchupNameMap.get(id) ?? id)
+            .join(", ");
+        }
+      }
+
+      // Format away duration
+      const awayMs = result.awayDurationMs;
+      const awayHrs = Math.floor(awayMs / 3_600_000);
+      const awayMins = Math.floor((awayMs % 3_600_000) / 60_000);
+      let awayStr: string;
+      if (awayHrs > 0) {
+        awayStr = `${awayHrs}h ${awayMins}m`;
+      } else {
+        awayStr = `${awayMins}m`;
+      }
+
+      const awaySinceTime = new Date(result.awaySince).toLocaleTimeString("en-US", {
+        hour: "numeric",
+        minute: "2-digit",
+      });
+
+      console.log();
+      if (hoursArg) {
+        console.log(`  Messages from the last ${hoursArg} hour${hoursArg !== 1 ? "s" : ""}`);
+      } else {
+        console.log(`  You've been away since ${awaySinceTime} (${awayStr})`);
+      }
+
+      if (result.threads.length === 0) {
+        console.log();
+        console.log("  No new messages.");
+        console.log();
+        break;
+      }
+
+      for (const thread of result.threads) {
+        const count = thread.messages.length;
+        const header = `── ${thread.chat} (${count} new) `;
+        const pad = Math.max(0, 50 - header.length);
+        console.log();
+        console.log(`  ${header}${"─".repeat(pad)}`);
+
+        for (const msg of thread.messages) {
+          const d = new Date(msg.timestamp);
+          const time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+          const senderName = catchupNameMap.get(msg.sender) ?? msg.sender;
+          const text = msg.text ?? "(no content)";
+          const reactions = msg.reactions ? ` ${formatReactions(msg.reactions, catchupNameMap)}` : "";
+
+          if (thread.isGroup) {
+            console.log(`    ${senderName}: ${text}${reactions}  ${time}`);
+          } else {
+            console.log(`    ${text}${reactions}  ${time}`);
+          }
+        }
+      }
+
+      console.log();
+      const convCount = result.threads.length;
+      console.log(`  ${result.totalMessages} new message${result.totalMessages !== 1 ? "s" : ""} in ${convCount} conversation${convCount !== 1 ? "s" : ""}`);
       console.log();
       break;
     }
