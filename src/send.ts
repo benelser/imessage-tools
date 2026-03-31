@@ -86,20 +86,49 @@ export async function createGroupChat(
 const SERVICE_PRIORITY: ServiceType[] = ["iMessage", "RCS", "SMS"];
 
 /**
+ * Normalize a phone number to the formats used in chat_identifier.
+ * The DB stores numbers as +1XXXXXXXXXX (E.164). Contacts may have
+ * formatted numbers like (202) 505-2358 or 2025052358.
+ */
+function normalizePhone(phone: string): string[] {
+  const digits = phone.replace(/\D/g, "");
+  const candidates: string[] = [];
+  // Try with +1 prefix (US)
+  if (digits.length === 10) {
+    candidates.push(`+1${digits}`);
+  }
+  // Try with + prefix
+  if (digits.length === 11 && digits.startsWith("1")) {
+    candidates.push(`+${digits}`);
+  }
+  // Try as-is with + prefix for international
+  if (digits.length > 10 && !digits.startsWith("1")) {
+    candidates.push(`+${digits}`);
+  }
+  // Always include the raw input and digits
+  candidates.push(phone);
+  candidates.push(digits);
+  return [...new Set(candidates)];
+}
+
+/**
  * Look up which services a contact has used by checking chat history.
  * Returns services ordered by most recent usage.
+ * Normalizes phone numbers to match DB format.
  */
 function detectServices(recipient: string): ServiceType[] {
   const db = openChatDB();
   try {
+    const candidates = normalizePhone(recipient);
+    const placeholders = candidates.map(() => "?").join(",");
     const rows = db
       .query(
         `SELECT DISTINCT c.service_name
          FROM chat c
-         WHERE c.chat_identifier = ?
+         WHERE c.chat_identifier IN (${placeholders})
          ORDER BY c.ROWID DESC`
       )
-      .all(recipient) as any[];
+      .all(...candidates) as any[];
     return rows.map((r: any) => r.service_name as ServiceType);
   } finally {
     db.close();
@@ -134,26 +163,43 @@ async function trySend(
 }
 
 /**
- * Send a message via Messages.app.
- *
- * If `service` is specified, sends via that service only.
- * Otherwise, determines the order from chat history + priority:
- *   - Known services from history are tried first (most recent first)
- *   - Then remaining services in priority order: iMessage > RCS > SMS
+ * Resolve recipient to the E.164 format used in the DB and by AppleScript.
+ * If we find a match in chat history, use that exact identifier.
  */
+function resolveRecipientFormat(recipient: string): string {
+  const db = openChatDB();
+  try {
+    const candidates = normalizePhone(recipient);
+    const placeholders = candidates.map(() => "?").join(",");
+    const row = db
+      .query(
+        `SELECT chat_identifier FROM chat
+         WHERE chat_identifier IN (${placeholders})
+         ORDER BY ROWID DESC LIMIT 1`
+      )
+      .get(...candidates) as any;
+    return row?.chat_identifier ?? candidates[0] ?? recipient;
+  } finally {
+    db.close();
+  }
+}
+
 export async function sendMessage(
   recipient: string,
   message: string,
   service?: ServiceType
 ): Promise<ServiceType> {
+  // Normalize recipient to the format Messages.app expects
+  const normalizedRecipient = resolveRecipientFormat(recipient);
+
   if (service) {
-    const ok = await trySend(recipient, message, service);
+    const ok = await trySend(normalizedRecipient, message, service);
     if (!ok) throw new Error(`Failed to send via ${service}`);
     return service;
   }
 
   // Build ordered list: known services first, then remaining by priority
-  const known = detectServices(recipient);
+  const known = detectServices(normalizedRecipient);
   const tried = new Set<ServiceType>();
   const order: ServiceType[] = [];
 
@@ -164,22 +210,26 @@ export async function sendMessage(
       tried.add(s);
     }
   }
-  // Fill in remaining services by priority
-  for (const s of SERVICE_PRIORITY) {
-    if (!tried.has(s)) {
-      order.push(s);
-      tried.add(s);
+
+  // Only fall back to other services if we have no history
+  // If DB says RCS or SMS, don't waste time trying iMessage
+  if (known.length === 0) {
+    for (const s of SERVICE_PRIORITY) {
+      if (!tried.has(s)) {
+        order.push(s);
+        tried.add(s);
+      }
     }
   }
 
   for (const svc of order) {
     console.log(`Trying ${svc}...`);
-    const ok = await trySend(recipient, message, svc);
+    const ok = await trySend(normalizedRecipient, message, svc);
     if (ok) return svc;
     console.log(`${svc} failed, falling back...`);
   }
 
   throw new Error(
-    `Failed to send to ${recipient} via any service (tried: ${order.join(", ")})`
+    `Failed to send to ${normalizedRecipient} via any service (tried: ${order.join(", ")})`
   );
 }
