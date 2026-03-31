@@ -392,11 +392,17 @@ async function main() {
           process.exit(1);
         }
         if (matches.length > 1) {
-          console.log(`\nMultiple contacts match "${recipient}":\n`);
-          for (let i = 0; i < matches.length; i++) {
-            console.log(`  ${i + 1}. ${matches[i].name} (${matches[i].phone})`);
+          const MAX_SHOW = 10;
+          const shown = matches.slice(0, MAX_SHOW);
+          const remaining = matches.length - MAX_SHOW;
+          console.log(`\nMultiple contacts match "${recipient}" (${matches.length} total):\n`);
+          for (let i = 0; i < shown.length; i++) {
+            console.log(`  ${i + 1}. ${shown[i].name} (${shown[i].phone})`);
           }
-          console.log(`\nRe-run with the full name or phone number to send.`);
+          if (remaining > 0) {
+            console.log(`  ... and ${remaining} more`);
+          }
+          console.log(`\nBe more specific or use a phone number to send.`);
           process.exit(1);
         }
         const contact = matches[0];
