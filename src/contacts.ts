@@ -5,7 +5,7 @@ import { readdirSync } from "fs";
 
 export interface ResolvedContact {
   name: string;
-  phone: string;
+  phone: string; // phone number or email identifier
 }
 
 const AB_SOURCES_DIR = join(
@@ -155,21 +155,27 @@ export function lookupContacts(query: string, limit?: number): ResolvedContact[]
       const rows = db
         .query(
           `SELECT r.ZFIRSTNAME as firstName, r.ZLASTNAME as lastName,
-                  p.ZFULLNUMBER as phone
+                  p.ZFULLNUMBER as phone, e.ZADDRESS as email
            FROM ZABCDRECORD r
-           JOIN ZABCDPHONENUMBER p ON p.ZOWNER = r.Z_PK
-           WHERE LOWER(r.ZFIRSTNAME) LIKE ? OR LOWER(r.ZLASTNAME) LIKE ?
-              OR LOWER(r.ZFIRSTNAME || ' ' || r.ZLASTNAME) LIKE ?`
+           LEFT JOIN ZABCDPHONENUMBER p ON p.ZOWNER = r.Z_PK
+           LEFT JOIN ZABCDEMAILADDRESS e ON e.ZOWNER = r.Z_PK
+           WHERE (LOWER(r.ZFIRSTNAME) LIKE ? OR LOWER(r.ZLASTNAME) LIKE ?
+              OR LOWER(r.ZFIRSTNAME || ' ' || r.ZLASTNAME) LIKE ?)
+              AND (p.ZFULLNUMBER IS NOT NULL OR e.ZADDRESS IS NOT NULL)`
         )
         .all(`%${q}%`, `%${q}%`, `%${q}%`) as {
           firstName: string | null;
           lastName: string | null;
-          phone: string;
+          phone: string | null;
+          email: string | null;
         }[];
 
       for (const row of rows) {
         const name = [row.firstName, row.lastName].filter(Boolean).join(" ");
         if (!name) continue;
+        // Need at least a phone or email to be contactable
+        const identifier = row.phone ?? row.email;
+        if (!identifier) continue;
 
         const first = (row.firstName ?? "").toLowerCase();
         const last = (row.lastName ?? "").toLowerCase();
@@ -188,24 +194,26 @@ export function lookupContacts(query: string, limit?: number): ResolvedContact[]
           score = 20; // contains
         }
 
-        results.push({ name, phone: row.phone, score });
+        results.push({ name, phone: identifier, score });
       }
     } finally {
       db.close();
     }
   }
 
-  // Deduplicate by phone digits, keeping highest score
-  const byPhone = new Map<string, ScoredContact>();
+  // Deduplicate by identifier (phone digits or email), keeping highest score
+  const byId = new Map<string, ScoredContact>();
   for (const r of results) {
-    const digits = r.phone.replace(/\D/g, "").slice(-10);
-    const existing = byPhone.get(digits);
+    const key = r.phone.includes("@")
+      ? r.phone.toLowerCase()
+      : r.phone.replace(/\D/g, "").slice(-10);
+    const existing = byId.get(key);
     if (!existing || r.score > existing.score) {
-      byPhone.set(digits, r);
+      byId.set(key, r);
     }
   }
 
-  const sorted = [...byPhone.values()].sort((a, b) => b.score - a.score);
+  const sorted = [...byId.values()].sort((a, b) => b.score - a.score);
   const capped = limit ? sorted.slice(0, limit) : sorted;
   return capped.map(({ score: _, ...rest }) => rest);
 }
