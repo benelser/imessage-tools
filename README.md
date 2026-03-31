@@ -118,22 +118,34 @@ Shows messages received since your last sent message, grouped by conversation wi
 
 ### [`/imessage-send`](skills/imessage-send/SKILL.md) — Send a message
 
-Send via iMessage, RCS, or SMS. Resolves contact names through macOS AddressBook with fuzzy matching — ambiguous names show a disambiguation list instead of guessing.
+Supports three modes: 1:1, 1:many (individual sends), and group chat. Resolves contact names with fuzzy matching and disambiguation.
 
+**1:1** — send to a single contact by name or number:
 ```
 /imessage-send "Jane Doe" "Hey what's up?"
 /imessage-send +15551234567 "Hello!"
 /imessage-send "Jane" "Hello!" --rcs
 ```
 
+**1:many** — send the same message individually to multiple contacts:
 ```
-  Multiple contacts match "Jane":
-
-    1. Jane Doe (+15551234567)
-    2. Jane Smith (+15559876543)
-
-  Be more specific or use a phone number to send.
+/imessage-send "Jane, John, Bob" "Meeting at 3"
 ```
+```
+  Resolved "Jane" -> Jane Doe (+15551234567)
+  Resolved "John" -> John Smith (+15559876543)
+  Resolved "Bob" -> Bob Jones (+15550001111)
+
+  [ok] Jane Doe: sent via iMessage
+  [ok] John Smith: sent via iMessage
+  [ok] Bob Jones: sent via SMS
+```
+
+**Group chat** — send to an existing named group:
+```
+/imessage-send --group "Work Chat" "Hello team!"
+```
+The group must have a display name set in Messages.app (tap group info to name it). Unnamed groups can't be targeted by name.
 
 ## Standalone CLI
 
@@ -147,6 +159,8 @@ bun run index.ts search "lunch"
 bun run index.ts catchup
 bun run index.ts contacts
 bun run index.ts send "Jane Doe" "Hey, what's up?"
+bun run index.ts send "Jane, John" "Meeting at 3"
+bun run index.ts send --group "Work Chat" "Hello team!"
 ```
 
 ## How it works
