@@ -112,24 +112,77 @@ function normalizePhone(phone: string): string[] {
 }
 
 /**
- * Look up which services a contact has used by checking chat history.
- * Returns services ordered by most recent usage.
- * Normalizes phone numbers to match DB format.
+ * Build a map of account_id -> service type by querying Messages.app via AppleScript.
+ * Cached after first call.
  */
-function detectServices(recipient: string): ServiceType[] {
+let _accountMap: Map<string, ServiceType> | null = null;
+async function getAccountMap(): Promise<Map<string, ServiceType>> {
+  if (_accountMap) return _accountMap;
+
+  const script = `
+    tell application "Messages"
+      set output to ""
+      repeat with a in every account
+        try
+          set sType to (service type of a) as text
+          set aId to id of a
+          set output to output & sType & "|" & aId & "\\n"
+        end try
+      end repeat
+      return output
+    end tell
+  `;
+
+  const proc = Bun.spawn(["osascript", "-e", script], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  await proc.exited;
+  const stdout = await new Response(proc.stdout).text();
+
+  _accountMap = new Map();
+  for (const line of stdout.trim().split("\n")) {
+    const [sType, aId] = line.split("|");
+    if (sType && aId) {
+      _accountMap.set(aId.trim(), sType.trim() as ServiceType);
+    }
+  }
+  return _accountMap;
+}
+
+/**
+ * Look up which services a contact has used by checking chat history.
+ * Uses account_id (not service_name) to determine the real service,
+ * since service_name can be misleading (e.g. "iMessage" for SMS/RCS contacts).
+ * Returns services ordered by most recent usage.
+ */
+async function detectServices(recipient: string): Promise<ServiceType[]> {
   const db = openChatDB();
   try {
     const candidates = normalizePhone(recipient);
     const placeholders = candidates.map(() => "?").join(",");
     const rows = db
       .query(
-        `SELECT DISTINCT c.service_name
+        `SELECT DISTINCT c.account_id, c.service_name
          FROM chat c
          WHERE c.chat_identifier IN (${placeholders})
          ORDER BY c.ROWID DESC`
       )
       .all(...candidates) as any[];
-    return rows.map((r: any) => r.service_name as ServiceType);
+
+    const accountMap = await getAccountMap();
+    const services: ServiceType[] = [];
+    const seen = new Set<ServiceType>();
+
+    for (const row of rows) {
+      // Trust account_id over service_name
+      const realService = accountMap.get(row.account_id) ?? row.service_name as ServiceType;
+      if (!seen.has(realService)) {
+        services.push(realService);
+        seen.add(realService);
+      }
+    }
+    return services;
   } finally {
     db.close();
   }
@@ -199,7 +252,7 @@ export async function sendMessage(
   }
 
   // Build ordered list: known services first, then remaining by priority
-  const known = detectServices(normalizedRecipient);
+  const known = await detectServices(normalizedRecipient);
   const tried = new Set<ServiceType>();
   const order: ServiceType[] = [];
 
