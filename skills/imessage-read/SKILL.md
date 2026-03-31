@@ -22,7 +22,7 @@ Examples:
 - `/imessage-read` — show last 20 messages
 - `/imessage-read 5` — show last 5 messages
 - `/imessage-read 10 +15551234567` — last 10 from a number
-- `/imessage-read --group "Ohio Dudes"` — read group chat
+- `/imessage-read --group "Work Chat"` — read group chat
 - `/imessage-read --group "Family" 50` — last 50 from Family group
 
 Show the output to the user.

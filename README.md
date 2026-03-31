@@ -10,7 +10,7 @@ A [Claude Code plugin](https://code.claude.com/docs/en/plugins) that lets you re
 
 ## Install
 
-Current release: **v2.1.0**
+Current release: **v2.4.0**
 
 ```
 /plugin marketplace add benelser/imessage-tools
@@ -21,7 +21,7 @@ Current release: **v2.1.0**
 To pin to a specific release, add the marketplace with a tag:
 
 ```
-/plugin marketplace add benelser/imessage-tools#v2.1.0
+/plugin marketplace add benelser/imessage-tools#v2.4.0
 ```
 
 ## Skills
@@ -51,9 +51,10 @@ View recent threads like the Messages sidebar. Shows contact names, timestamps, 
 Read messages in a chat-style layout with day separators, right-aligned sent messages, smart timestamps (only shown on 30min+ gaps), and inline reactions.
 
 ```
-/imessage-read            # last 20 messages (all contacts)
-/imessage-read 10         # last 10 messages
-/imessage-read 20 +1555…  # last 20 from a specific number
+/imessage-read                       # last 20 messages (all contacts)
+/imessage-read 10                    # last 10 messages
+/imessage-read 20 +1555…             # last 20 from a specific number
+/imessage-read --group "Work Chat"   # read a group chat
 ```
 
 ```
@@ -155,6 +156,7 @@ Works without Claude Code too:
 bun install
 bun run index.ts inbox
 bun run index.ts read 10
+bun run index.ts read --group "Work Chat"
 bun run index.ts search "lunch"
 bun run index.ts catchup
 bun run index.ts contacts
