@@ -62,33 +62,42 @@ async function deployClaude() {
 async function deployCodex() {
   console.log("\n--- Codex CLI ---");
 
-  const pluginDir = join(process.env.HOME!, ".codex/plugins/imessage-tools");
   const marketplacePath = join(process.env.HOME!, ".agents/plugins/marketplace.json");
+  const marketplacePluginsDir = join(process.env.HOME!, ".agents/plugins/plugins/imessage-tools");
+  const cacheDir = join(process.env.HOME!, ".codex/plugins/cache/personal/imessage-tools/local");
+  const configPath = join(process.env.HOME!, ".codex/config.toml");
 
-  // Copy plugin files
-  mkdirSync(pluginDir, { recursive: true });
-  cpSync(ROOT, pluginDir, {
-    recursive: true,
-    filter: (src) => {
-      // Skip node_modules, .git, .claude dir
-      return !src.includes("node_modules") && !src.includes("/.git/") && !src.includes("/.git") && !src.includes("/.claude/");
-    }
-  });
-  console.log(`  Copied plugin → ${pluginDir}`);
+  // Files to exclude from plugin copies
+  const exclude = (src: string) =>
+    !src.includes("node_modules") &&
+    !src.includes("/.git/") &&
+    !src.includes("/.git") &&
+    !src.includes("/.claude/") &&
+    !src.includes("/.claude-plugin") &&
+    !src.includes("/.agents") &&
+    !src.includes("/.cursor") &&
+    !src.includes("/hooks/") &&
+    !src.includes("/scripts/") &&
+    !src.includes("/skills-src/") &&
+    !src.includes("/CLAUDE.md");
 
-  // Install deps in plugin dir
-  await run(["bun", "install", "--cwd", pluginDir], "bun install");
-
-  // Create symlink from marketplace-relative path to actual plugin dir
-  // Codex resolves source.path relative to marketplace root (~/.agents/plugins/)
-  const marketplacePluginsDir = join(process.env.HOME!, ".agents/plugins/plugins");
-  const symlinkPath = join(marketplacePluginsDir, "imessage-tools");
+  // 1. Populate marketplace source dir (for discovery in /plugins UI)
+  console.log("  Setting up marketplace source...");
+  await run(["rm", "-rf", marketplacePluginsDir], "clean source");
   mkdirSync(marketplacePluginsDir, { recursive: true });
-  try { Bun.spawnSync(["rm", "-f", symlinkPath]); } catch {}
-  Bun.spawnSync(["ln", "-sfn", pluginDir, symlinkPath]);
-  console.log(`  Symlinked ${symlinkPath} → ${pluginDir}`);
+  cpSync(ROOT, marketplacePluginsDir, { recursive: true, filter: exclude });
+  // Ensure only .codex-plugin exists (not .claude-plugin)
+  await run(["rm", "-rf", join(marketplacePluginsDir, ".claude-plugin")], "remove claude manifest");
+  console.log(`  Source → ${marketplacePluginsDir}`);
 
-  // Create/update personal marketplace
+  // 2. Populate Codex cache (this is what actually loads at runtime)
+  console.log("  Populating plugin cache...");
+  await run(["rm", "-rf", cacheDir], "clean cache");
+  mkdirSync(cacheDir, { recursive: true });
+  cpSync(marketplacePluginsDir, cacheDir, { recursive: true });
+  console.log(`  Cache → ${cacheDir}`);
+
+  // 3. Create/update personal marketplace
   mkdirSync(join(process.env.HOME!, ".agents/plugins"), { recursive: true });
 
   let marketplace: any = { name: "personal", interface: { displayName: "Personal Plugins" }, plugins: [] };
@@ -98,7 +107,6 @@ async function deployCodex() {
     } catch {}
   }
 
-  // Upsert our plugin entry — path must be relative with ./ prefix
   const existing = marketplace.plugins.findIndex((p: any) => p.name === "imessage-tools");
   const entry = {
     name: "imessage-tools",
@@ -111,10 +119,19 @@ async function deployCodex() {
   } else {
     marketplace.plugins.push(entry);
   }
-
   writeFileSync(marketplacePath, JSON.stringify(marketplace, null, 2) + "\n");
-  console.log(`  Updated ${marketplacePath}`);
-  console.log("  Restart Codex and enable via /plugins.");
+  console.log(`  Marketplace → ${marketplacePath}`);
+
+  // 4. Enable plugin in config.toml
+  const configContent = readFileSync(configPath, "utf-8");
+  if (!configContent.includes('"imessage-tools@personal"')) {
+    writeFileSync(configPath, configContent + '\n[plugins."imessage-tools@personal"]\nenabled = true\n');
+    console.log("  Enabled in config.toml");
+  } else {
+    console.log("  Already enabled in config.toml");
+  }
+
+  console.log("  Restart Codex to load the plugin.");
 }
 
 // Run
