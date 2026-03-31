@@ -24,6 +24,153 @@ const TAPBACK_MAP: Record<number, string> = {
   3005: "Removed ❓",
 };
 
+// Emoji-only map for inline reaction display
+const TAPBACK_EMOJI: Record<number, string> = {
+  2000: "♥️",
+  2001: "👍",
+  2002: "👎",
+  2003: "😂",
+  2004: "‼️",
+  2005: "❓",
+};
+
+/**
+ * Extract the parent message GUID from an associated_message_guid value.
+ * Formats seen: "p:0/GUID", "p:1/GUID", "bp:1/GUID", or raw "GUID".
+ */
+function extractParentGuid(assocGuid: string): string {
+  const slashIdx = assocGuid.indexOf("/");
+  if (slashIdx !== -1) return assocGuid.slice(slashIdx + 1);
+  return assocGuid;
+}
+
+interface TapbackInfo {
+  emoji: string;
+  senderHandle: string | null;
+  isFromMe: boolean;
+  isRemoval: boolean;
+}
+
+/**
+ * Given a set of parent message GUIDs, fetch all tapback reactions for them
+ * and return a map from parent GUID -> list of tapback info.
+ */
+function fetchTapbacksForGuids(
+  db: Database,
+  guids: string[]
+): Map<string, TapbackInfo[]> {
+  const result = new Map<string, TapbackInfo[]>();
+  if (guids.length === 0) return result;
+
+  // Build placeholders for IN clause
+  const placeholders = guids.map(() => "?").join(",");
+
+  const rows = db
+    .query(
+      `SELECT
+        m.associated_message_guid,
+        m.associated_message_type,
+        m.associated_message_emoji,
+        m.is_from_me,
+        h.id as handle_id
+      FROM message m
+      LEFT JOIN handle h ON m.handle_id = h.ROWID
+      WHERE m.associated_message_type != 0
+        AND m.associated_message_guid IN (${guids.map((g) => `'p:0/${g}'`).join(",")})
+      ORDER BY m.date ASC`
+    )
+    .all() as any[];
+
+  // Also query for other prefix patterns (p:1/, bp:, and raw GUID)
+  const rows2 = db
+    .query(
+      `SELECT
+        m.associated_message_guid,
+        m.associated_message_type,
+        m.associated_message_emoji,
+        m.is_from_me,
+        h.id as handle_id
+      FROM message m
+      LEFT JOIN handle h ON m.handle_id = h.ROWID
+      WHERE m.associated_message_type != 0
+        AND m.associated_message_guid NOT LIKE 'p:0/%'
+        AND (${guids.map(() => "m.associated_message_guid LIKE '%' || ? OR m.associated_message_guid = ?").join(" OR ")})
+      ORDER BY m.date ASC`
+    )
+    .all(...guids.flatMap((g) => [g, g])) as any[];
+
+  for (const row of [...rows, ...rows2]) {
+    const parentGuid = extractParentGuid(row.associated_message_guid);
+    const type = row.associated_message_type as number;
+    const isRemoval = type >= 3000 && type <= 3006;
+
+    let emoji: string;
+    if (type === 2006 || type === 3006) {
+      emoji = row.associated_message_emoji ?? "🫥";
+    } else {
+      emoji = TAPBACK_EMOJI[type] ?? TAPBACK_EMOJI[type - 1000] ?? "?";
+    }
+
+    const info: TapbackInfo = {
+      emoji,
+      senderHandle: row.is_from_me ? null : row.handle_id,
+      isFromMe: !!row.is_from_me,
+      isRemoval,
+    };
+
+    const list = result.get(parentGuid) ?? [];
+    list.push(info);
+    result.set(parentGuid, list);
+  }
+
+  return result;
+}
+
+/**
+ * Process tapback info into net reactions (after removals cancel adds).
+ * Returns null if no net reactions remain.
+ */
+function buildReactions(tapbacks: TapbackInfo[]): Reaction[] | null {
+  const removals = tapbacks.filter((t) => t.isRemoval);
+  const adds = tapbacks.filter((t) => !t.isRemoval);
+
+  // Track which adds are cancelled by removals
+  const cancelledIndices = new Set<number>();
+  for (const removal of removals) {
+    const senderKey = removal.isFromMe ? "__me__" : removal.senderHandle;
+    for (let i = 0; i < adds.length; i++) {
+      if (cancelledIndices.has(i)) continue;
+      const add = adds[i];
+      const addSenderKey = add.isFromMe ? "__me__" : add.senderHandle;
+      if (addSenderKey === senderKey && add.emoji === removal.emoji) {
+        cancelledIndices.add(i);
+        break;
+      }
+    }
+  }
+
+  const result: Reaction[] = [];
+  for (let i = 0; i < adds.length; i++) {
+    if (!cancelledIndices.has(i)) {
+      result.push({
+        emoji: adds[i].emoji,
+        sender: adds[i].isFromMe ? "You" : (adds[i].senderHandle ?? "Unknown"),
+      });
+    }
+  }
+
+  return result.length > 0 ? result : null;
+}
+
+/** Format reactions array into a display string like (emoji Name, emoji Name) */
+export function formatReactions(reactions: Reaction[], nameMap?: Map<string, string>): string {
+  const parts = reactions.map((r) => {
+    const name = r.sender === "You" ? "You" : (nameMap?.get(r.sender) ?? r.sender);
+    return `${r.emoji} ${name}`;
+  });
+  return `(${parts.join(", ")})`;
+}
+
 function coredateToISO(coredate: number): string {
   const unix = coredate / 1_000_000_000 + CORE_DATA_EPOCH_OFFSET;
   return new Date(unix * 1000).toISOString();
@@ -132,11 +279,17 @@ export function openChatDB(): Database {
   return new Database(CHAT_DB_PATH, { readonly: true });
 }
 
+export interface Reaction {
+  emoji: string;
+  sender: string; // raw handle or "You"
+}
+
 export interface Message {
   timestamp: string;
   sender: string;
   text: string | null;
   is_from_me: boolean;
+  reactions?: Reaction[];
 }
 
 export function readMessages(limit = 20, contact?: string): Message[] {
@@ -148,6 +301,7 @@ export function readMessages(limit = 20, contact?: string): Message[] {
     const rows = db
       .query(
         `SELECT
+          m.guid,
           m.date as coredate,
           m.is_from_me,
           m.text,
@@ -171,12 +325,23 @@ export function readMessages(limit = 20, contact?: string): Message[] {
       )
       .all(...params) as any[];
 
-    return rows.map((row) => ({
-      timestamp: coredateToISO(row.coredate),
-      sender: row.is_from_me ? "Me" : (row.handle_id ?? "Unknown"),
-      text: truncate(resolveText(row)),
-      is_from_me: !!row.is_from_me,
-    }));
+    // Separate regular messages from tapbacks
+    const regularRows = rows.filter((r) => !r.associated_message_type);
+    const parentGuids = regularRows.map((r) => r.guid as string);
+
+    // Fetch tapbacks for these messages
+    const tapbackMap = fetchTapbacksForGuids(db, parentGuids);
+
+    return regularRows.map((row) => {
+      const tapbacks = tapbackMap.get(row.guid);
+      return {
+        timestamp: coredateToISO(row.coredate),
+        sender: row.is_from_me ? "Me" : (row.handle_id ?? "Unknown"),
+        text: truncate(resolveText(row)),
+        is_from_me: !!row.is_from_me,
+        reactions: tapbacks ? buildReactions(tapbacks) ?? undefined : undefined,
+      };
+    });
   } finally {
     db.close();
   }
@@ -188,6 +353,7 @@ export function searchMessages(keyword: string, limit = 25): Message[] {
     const rows = db
       .query(
         `SELECT
+          m.guid,
           m.date as coredate,
           m.is_from_me,
           m.text,
@@ -211,12 +377,22 @@ export function searchMessages(keyword: string, limit = 25): Message[] {
       )
       .all(`%${keyword}%`, `%${keyword}%`, limit) as any[];
 
-    return rows.map((row) => ({
-      timestamp: coredateToISO(row.coredate),
-      sender: row.is_from_me ? "Me" : (row.handle_id ?? "Unknown"),
-      text: truncate(resolveText(row)),
-      is_from_me: !!row.is_from_me,
-    }));
+    // Filter out tapback rows from search results
+    const regularRows = rows.filter((r) => !r.associated_message_type);
+    const parentGuids = regularRows.map((r) => r.guid as string);
+
+    const tapbackMap = fetchTapbacksForGuids(db, parentGuids);
+
+    return regularRows.map((row) => {
+      const tapbacks = tapbackMap.get(row.guid);
+      return {
+        timestamp: coredateToISO(row.coredate),
+        sender: row.is_from_me ? "Me" : (row.handle_id ?? "Unknown"),
+        text: truncate(resolveText(row)),
+        is_from_me: !!row.is_from_me,
+        reactions: tapbacks ? buildReactions(tapbacks) ?? undefined : undefined,
+      };
+    });
   } finally {
     db.close();
   }
@@ -304,10 +480,11 @@ export function inbox(limit = 15): InboxThread[] {
         }
       }
 
-      // Get the latest message in this chat
+      // Get the latest non-tapback message in this chat for the preview
       const msg = db
         .query(
           `SELECT
+            m.guid,
             m.date as coredate,
             m.is_from_me,
             m.text,
@@ -325,6 +502,7 @@ export function inbox(limit = 15): InboxThread[] {
           LEFT JOIN handle h ON m.handle_id = h.ROWID
           LEFT JOIN message_attachment_join maj ON maj.message_id = m.ROWID
           LEFT JOIN attachment a ON a.ROWID = maj.attachment_id
+          WHERE m.associated_message_type = 0 OR m.associated_message_type IS NULL
           ORDER BY m.date DESC
           LIMIT 1`
         )
@@ -333,7 +511,11 @@ export function inbox(limit = 15): InboxThread[] {
       if (!msg) continue;
 
       const text = resolveText(msg);
-      const preview = truncate(text);
+      const tapbacks = fetchTapbacksForGuids(db, [msg.guid]);
+      const reactions = tapbacks.get(msg.guid);
+      const netReactions = reactions ? buildReactions(reactions) : null;
+      let preview = truncate(text);
+      if (preview && netReactions) preview = `${preview} ${formatReactions(netReactions)}`;
 
       results.push({
         chat: name,

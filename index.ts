@@ -1,4 +1,4 @@
-import { readMessages, searchMessages, listContacts, inbox } from "./src/db";
+import { readMessages, searchMessages, listContacts, inbox, formatReactions } from "./src/db";
 import { sendMessage } from "./src/send";
 import { lookupContact, isDirectRecipient, resolveIdentifiers } from "./src/contacts";
 
@@ -89,11 +89,15 @@ async function main() {
       const contact = process.argv[4];
       const messages = readMessages(limit, contact);
 
-      // Resolve sender names
+      // Resolve sender names (including reaction senders)
       const senderIds = messages
         .filter((m) => !m.is_from_me)
         .map((m) => m.sender);
-      const senderMap = resolveIdentifiers(senderIds);
+      const reactionSenderIds = messages
+        .flatMap((m) => m.reactions ?? [])
+        .map((r) => r.sender)
+        .filter((s) => s !== "You");
+      const senderMap = resolveIdentifiers([...senderIds, ...reactionSenderIds]);
 
       const now = Date.now();
       const line = "─".repeat(50);
@@ -115,9 +119,10 @@ async function main() {
           ? "Me"
           : (senderMap.get(msg.sender) ?? msg.sender);
         const text = msg.text ?? "(no content)";
+        const reactions = msg.reactions ? ` ${formatReactions(msg.reactions, senderMap)}` : "";
 
         console.log(`  ${sender}  ${time}`);
-        console.log(`    ${text}`);
+        console.log(`    ${text}${reactions}`);
         console.log();
       }
       break;
@@ -135,7 +140,11 @@ async function main() {
       const senderIds = messages
         .filter((m) => !m.is_from_me)
         .map((m) => m.sender);
-      const senderMap = resolveIdentifiers(senderIds);
+      const reactionSenderIds2 = messages
+        .flatMap((m) => m.reactions ?? [])
+        .map((r) => r.sender)
+        .filter((s) => s !== "You");
+      const senderMap = resolveIdentifiers([...senderIds, ...reactionSenderIds2]);
 
       const now = Date.now();
 
@@ -158,9 +167,10 @@ async function main() {
           ? "Me"
           : (senderMap.get(msg.sender) ?? msg.sender);
         const text = msg.text ?? "(no content)";
+        const reactions = msg.reactions ? ` ${formatReactions(msg.reactions, senderMap)}` : "";
 
         console.log(`  ${sender}  ${time}`);
-        console.log(`    ${text}`);
+        console.log(`    ${text}${reactions}`);
         console.log();
       }
       break;
