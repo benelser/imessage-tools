@@ -443,22 +443,37 @@ export function searchMessagesWithContext(
 ): SearchResult[] {
   const db = openChatDB();
   try {
-    // Step 1: Find matching message ROWIDs and their chat associations
-    const matchRows = db
+    // Step 1: Find matching messages by scanning recent messages and decoding attributedBody
+    // We fetch a large batch and filter in code since attributedBody is binary
+    const keywordLower = keyword.toLowerCase();
+    const SCAN_BATCH = Math.max(limit * 50, 2000); // scan enough to find matches
+
+    const candidateRows = db
       .query(
         `SELECT
           m.ROWID as msg_rowid,
           m.guid,
           m.date as coredate,
+          m.text,
+          m.attributedBody,
           cmj.chat_id
         FROM message m
         JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
         WHERE (m.associated_message_type = 0 OR m.associated_message_type IS NULL)
-          AND (m.text LIKE ? OR m.attributedBody LIKE ?)
         ORDER BY m.date DESC
         LIMIT ?`
       )
-      .all(`%${keyword}%`, `%${keyword}%`, limit) as any[];
+      .all(SCAN_BATCH) as any[];
+
+    // Filter: check decoded text content for keyword
+    const matchRows = candidateRows.filter((row) => {
+      if (row.text && row.text.toLowerCase().includes(keywordLower)) return true;
+      if (row.attributedBody) {
+        const decoded = extractFromAttributedBody(new Uint8Array(row.attributedBody));
+        if (decoded && decoded.toLowerCase().includes(keywordLower)) return true;
+      }
+      return false;
+    }).slice(0, limit);
 
     if (matchRows.length === 0) return [];
 
