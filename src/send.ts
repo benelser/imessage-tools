@@ -31,6 +31,48 @@ export async function sendToGroup(
   }
 }
 
+/**
+ * Create a group chat by sending an initial message to multiple recipients.
+ * Uses AppleScript to build a buddy list and send to all at once.
+ */
+export async function createGroupChat(
+  recipients: string[],
+  message: string
+): Promise<void> {
+  if (recipients.length < 2) {
+    throw new Error("Group chat requires at least 2 recipients");
+  }
+
+  const escapedMessage = message.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
+  const buddyLines = recipients
+    .map((phone) => {
+      const escaped = phone.replace(/"/g, '\\"');
+      return `    set end of buddyList to participant "${escaped}" of imessageService`;
+    })
+    .join("\n");
+
+  const script = `
+    tell application "Messages"
+      set imessageService to 1st account whose service type = iMessage
+      set buddyList to {}
+${buddyLines}
+      send "${escapedMessage}" to buddyList
+    end tell
+  `;
+
+  const proc = Bun.spawn(["osascript", "-e", script], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(`Failed to create group chat: ${stderr.trim()}`);
+  }
+}
+
 const SERVICE_PRIORITY: ServiceType[] = ["iMessage", "RCS", "SMS"];
 
 /**

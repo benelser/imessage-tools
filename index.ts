@@ -1,5 +1,5 @@
 import { readMessages, readGroupMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, catchup, formatReactions, findGroupChats } from "./src/db";
-import { sendMessage, sendToGroup } from "./src/send";
+import { sendMessage, sendToGroup, createGroupChat } from "./src/send";
 import { lookupContact, lookupContacts, isDirectRecipient, resolveIdentifiers } from "./src/contacts";
 
 const command = process.argv[2];
@@ -17,6 +17,8 @@ Commands:
                              Send a message (auto-detects service)
   send "Name1, Name2" <message>  Send same message to multiple contacts (1:many)
   send --group "Group Name" <message>  Send to an existing group chat
+  create-group resolve "names..."    Resolve contacts for a new group chat
+  create-group send "phones" "msg"   Create a group chat with resolved numbers
 `);
 }
 
@@ -640,6 +642,82 @@ async function main() {
       const usedService = await sendMessage(recipient, message, serviceOverride);
       console.log(`Message sent to ${displayName} via ${usedService}`);
       break;
+    }
+    case "create-group": {
+      const subcommand = process.argv[3];
+
+      if (subcommand === "resolve") {
+        const input = process.argv[4];
+        if (!input) {
+          console.error("Error: names/numbers required");
+          console.error('Usage: create-group resolve "Jane, John, +15551234567"');
+          process.exit(1);
+        }
+
+        const names = input.split(",").map((n) => n.trim()).filter(Boolean);
+        const resolved: { input: string; name: string; phone: string; status: string }[] = [];
+        const ambiguous: { input: string; candidates: string[] }[] = [];
+        const notFound: string[] = [];
+
+        for (const name of names) {
+          if (isDirectRecipient(name)) {
+            // Already a phone number or email — pass through
+            const displayName = resolveIdentifiers([name]).get(name) ?? name;
+            resolved.push({ input: name, name: displayName, phone: name, status: "ok" });
+          } else {
+            const matches = lookupContacts(name);
+            if (matches.length === 0) {
+              notFound.push(name);
+            } else if (matches.length === 1) {
+              resolved.push({ input: name, name: matches[0].name, phone: matches[0].phone, status: "ok" });
+            } else {
+              // Check for high-confidence match
+              const exactFull = matches.find((m) => m.name.toLowerCase() === name.toLowerCase());
+              const exactFirst = matches.find((m) => m.name.split(" ")[0].toLowerCase() === name.toLowerCase());
+              const best = exactFull ?? exactFirst;
+
+              if (best && !(matches.length > 1 && !exactFull &&
+                matches[0].name.split(" ")[0].toLowerCase() === matches[1].name.split(" ")[0].toLowerCase())) {
+                resolved.push({ input: name, name: best.name, phone: best.phone, status: "ok" });
+              } else {
+                ambiguous.push({
+                  input: name,
+                  candidates: matches.slice(0, 5).map((m) => `${m.name} (${m.phone})`),
+                });
+              }
+            }
+          }
+        }
+
+        console.log(JSON.stringify({ resolved, ambiguous, notFound }, null, 2));
+        break;
+      }
+
+      if (subcommand === "send") {
+        const phones = process.argv[4];
+        const groupMessage = process.argv[5];
+        if (!phones || !groupMessage) {
+          console.error("Error: phone numbers and message required");
+          console.error('Usage: create-group send "+15551234567,+15559876543" "Hello!"');
+          process.exit(1);
+        }
+
+        const recipients = phones.split(",").map((p) => p.trim()).filter(Boolean);
+        if (recipients.length < 2) {
+          console.error("Error: at least 2 recipients required for a group chat");
+          process.exit(1);
+        }
+
+        console.log(`Creating group chat with ${recipients.length} recipients...`);
+        await createGroupChat(recipients, groupMessage);
+        console.log(`Group chat created and first message sent to ${recipients.length} recipients.`);
+        break;
+      }
+
+      console.error("Error: unknown subcommand. Use 'resolve' or 'send'.");
+      console.error('Usage: create-group resolve "names..."');
+      console.error('       create-group send "phones" "message"');
+      process.exit(1);
     }
     default:
       usage();
