@@ -123,17 +123,24 @@ export function resolveIdentifiers(
 }
 
 /**
- * Look up a contact by name. Returns first match with phone number.
- * Throws if no match found.
+ * Look up contacts by name, returning ALL matches ranked by relevance.
+ * Scoring: exact full name > exact first name > starts-with > contains.
+ * Deduplicates by phone number (keeps highest-scored entry).
  */
-export function lookupContact(query: string): ResolvedContact {
+export function lookupContacts(query: string, limit?: number): ResolvedContact[] {
   const q = query.toLowerCase();
   let sources: string[];
   try {
     sources = readdirSync(AB_SOURCES_DIR);
   } catch {
-    throw new Error("Cannot access AddressBook database");
+    return [];
   }
+
+  interface ScoredContact extends ResolvedContact {
+    score: number;
+  }
+
+  const results: ScoredContact[] = [];
 
   for (const source of sources) {
     const dbPath = join(AB_SOURCES_DIR, source, "AddressBook-v22.abcddb");
@@ -152,22 +159,67 @@ export function lookupContact(query: string): ResolvedContact {
            FROM ZABCDRECORD r
            JOIN ZABCDPHONENUMBER p ON p.ZOWNER = r.Z_PK
            WHERE LOWER(r.ZFIRSTNAME) LIKE ? OR LOWER(r.ZLASTNAME) LIKE ?
-              OR LOWER(r.ZFIRSTNAME || ' ' || r.ZLASTNAME) LIKE ?
-           LIMIT 1`
+              OR LOWER(r.ZFIRSTNAME || ' ' || r.ZLASTNAME) LIKE ?`
         )
-        .all(`%${q}%`, `%${q}%`, `%${q}%`) as any[];
+        .all(`%${q}%`, `%${q}%`, `%${q}%`) as {
+          firstName: string | null;
+          lastName: string | null;
+          phone: string;
+        }[];
 
-      if (rows.length > 0) {
-        const row = rows[0];
+      for (const row of rows) {
         const name = [row.firstName, row.lastName].filter(Boolean).join(" ");
-        return { name, phone: row.phone };
+        if (!name) continue;
+
+        const first = (row.firstName ?? "").toLowerCase();
+        const last = (row.lastName ?? "").toLowerCase();
+        const full = name.toLowerCase();
+
+        let score: number;
+        if (full === q) {
+          score = 100; // exact full name
+        } else if (first === q) {
+          score = 80; // exact first name
+        } else if (last === q) {
+          score = 75; // exact last name
+        } else if (first.startsWith(q) || last.startsWith(q)) {
+          score = 50; // starts-with
+        } else {
+          score = 20; // contains
+        }
+
+        results.push({ name, phone: row.phone, score });
       }
     } finally {
       db.close();
     }
   }
 
-  throw new Error(`No contact found matching "${query}"`);
+  // Deduplicate by phone digits, keeping highest score
+  const byPhone = new Map<string, ScoredContact>();
+  for (const r of results) {
+    const digits = r.phone.replace(/\D/g, "").slice(-10);
+    const existing = byPhone.get(digits);
+    if (!existing || r.score > existing.score) {
+      byPhone.set(digits, r);
+    }
+  }
+
+  const sorted = [...byPhone.values()].sort((a, b) => b.score - a.score);
+  const capped = limit ? sorted.slice(0, limit) : sorted;
+  return capped.map(({ score: _, ...rest }) => rest);
+}
+
+/**
+ * Look up a contact by name. Returns the best match with phone number.
+ * Throws if no match found.
+ */
+export function lookupContact(query: string): ResolvedContact {
+  const matches = lookupContacts(query, 1);
+  if (matches.length === 0) {
+    throw new Error(`No contact found matching "${query}"`);
+  }
+  return matches[0];
 }
 
 /**

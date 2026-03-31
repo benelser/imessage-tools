@@ -1,6 +1,6 @@
 import { readMessages, searchMessages, listContacts, inbox, formatReactions } from "./src/db";
 import { sendMessage } from "./src/send";
-import { lookupContact, isDirectRecipient, resolveIdentifiers } from "./src/contacts";
+import { lookupContact, lookupContacts, isDirectRecipient, resolveIdentifiers } from "./src/contacts";
 
 const command = process.argv[2];
 
@@ -191,7 +191,20 @@ async function main() {
       // Resolve contact name to phone number if needed
       let displayName = recipient;
       if (!isDirectRecipient(recipient)) {
-        const contact = lookupContact(recipient);
+        const matches = lookupContacts(recipient);
+        if (matches.length === 0) {
+          console.error(`No contact found matching "${recipient}"`);
+          process.exit(1);
+        }
+        if (matches.length > 1) {
+          console.log(`\nMultiple contacts match "${recipient}":\n`);
+          for (let i = 0; i < matches.length; i++) {
+            console.log(`  ${i + 1}. ${matches[i].name} (${matches[i].phone})`);
+          }
+          console.log(`\nRe-run with the full name or phone number to send.`);
+          process.exit(1);
+        }
+        const contact = matches[0];
         console.log(`Resolved "${recipient}" -> ${contact.name} (${contact.phone})`);
         displayName = contact.name;
         recipient = contact.phone;
