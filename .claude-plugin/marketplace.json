@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "imessage-tools",
-      "source": ".",
+      "source": "./",
       "description": "Read, search, and send iMessages directly from Claude Code",
       "version": "1.0.0"
     }
