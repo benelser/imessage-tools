@@ -59,10 +59,15 @@ async function main() {
       // Resolve chat names using contact lookup
       for (const thread of threads) {
         const resolved = thread.participants.map((id) => nameMap.get(id) ?? id);
-        // Use resolved names unless chat already has a display name that isn't raw identifiers
         const isRawIds = thread.chat === thread.participants.join(", ") || thread.chat === thread.participants[0];
         if (isRawIds) {
-          thread.chat = resolved.join(", ");
+          if (resolved.length <= 3) {
+            thread.chat = resolved.join(", ");
+          } else {
+            // Use first names + overflow count for large groups
+            const firstNames = resolved.map((n) => n.split(" ")[0]);
+            thread.chat = `${firstNames.slice(0, 2).join(", ")} +${resolved.length - 2}`;
+          }
         }
       }
 

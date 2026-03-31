@@ -258,19 +258,19 @@ function resolveText(row: any): string | null {
   if (row.cache_has_attachments) {
     const mime = row.mime_type;
     const name = row.transfer_name;
-    if (mime?.startsWith("image/")) return `[Image: ${name ?? "photo"}]`;
-    if (mime?.startsWith("video/")) return `[Video: ${name ?? "video"}]`;
+    if (mime?.startsWith("image/")) return "Sent a photo";
+    if (mime?.startsWith("video/")) return "Sent a video";
     if (mime?.startsWith("audio/") || row.is_audio_message)
-      return `[Audio: ${name ?? "voice memo"}]`;
+      return "Sent a voice memo";
     if (row.balloon_bundle_id === "com.apple.messages.URLBalloonProvider")
-      return `[Link shared]`;
-    if (name) return `[Attachment: ${name}]`;
-    return "[Attachment]";
+      return "Shared a link";
+    if (name) return `Sent ${name}`;
+    return "Sent an attachment";
   }
 
   // Link balloon without attachment
   if (row.balloon_bundle_id === "com.apple.messages.URLBalloonProvider")
-    return "[Link shared]";
+    return "Shared a link";
 
   return null;
 }
