@@ -13,13 +13,13 @@ A [Claude Code plugin](https://code.claude.com/docs/en/plugins) that lets you re
 
 - **macOS** — iMessage is a macOS-only feature
 - **[Bun](https://bun.sh)** — JavaScript runtime (`brew install oven-sh/bun/bun`)
-- **Full Disk Access** — your terminal needs Full Disk Access in System Settings > Privacy & Security to read `~/Library/Messages/chat.db`
+- **Full Disk Access** — your terminal needs Full Disk Access in System Settings > Privacy & Security to read `~/Library/Messages/chat.db` and `~/Library/Application Support/AddressBook/` (for resolving phone numbers to contact names)
 
 ## Install as a Claude Code plugin
 
 ```
-/plugin marketplace add youruser/imessage-tools
-/plugin install imessage-tools@youruser-imessage-tools
+/plugin marketplace add benelser/imessage-tools
+/plugin install imessage-tools@benelser-imessage-tools
 /reload-plugins
 ```
 
@@ -39,8 +39,8 @@ bun run index.ts send "Jane Doe" "Hey, what's up?"
 ## How it works
 
 - **Reading messages**: Queries `~/Library/Messages/chat.db` (SQLite) directly — no AppleScript needed for reads
-- **Sending messages**: Uses AppleScript to drive Messages.app, with auto-detection of iMessage/RCS/SMS
-- **Contact resolution**: Reads macOS AddressBook databases to resolve names to phone numbers
+- **Contact resolution**: Cross-references phone numbers/emails against macOS AddressBook databases (`~/Library/Application Support/AddressBook/Sources/`) to display real contact names instead of raw identifiers
+- **Sending messages**: Uses AppleScript to drive Messages.app, with auto-detection of iMessage/RCS/SMS. Supports sending by contact name (resolved via AddressBook) or direct phone number
 
 ## License
 
