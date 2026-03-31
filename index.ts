@@ -1,5 +1,5 @@
-import { readMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, catchup, formatReactions } from "./src/db";
-import { sendMessage } from "./src/send";
+import { readMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, catchup, formatReactions, findGroupChats } from "./src/db";
+import { sendMessage, sendToGroup } from "./src/send";
 import { lookupContact, lookupContacts, isDirectRecipient, resolveIdentifiers } from "./src/contacts";
 
 const command = process.argv[2];
@@ -15,17 +15,8 @@ Commands:
   contacts                   List all contacts by message count
   send <name-or-number> <message> [--sms|--rcs|--imessage]
                              Send a message (auto-detects service)
-
-Examples:
-  bun run index.ts inbox
-  bun run index.ts inbox 5
-  bun run index.ts read 50
-  bun run index.ts read 10 "+15551234567"
-  bun run index.ts search "lunch"
-  bun run index.ts contacts
-  bun run index.ts send "Jane Doe" "Hey what's up?"
-  bun run index.ts send "+15551234567" "Hello!"
-  bun run index.ts send "+15551234567" "Hello!" --rcs
+  send "Name1, Name2" <message>  Send same message to multiple contacts (1:many)
+  send --group "Group Name" <message>  Send to an existing group chat
 `);
 }
 
@@ -393,6 +384,45 @@ async function main() {
       break;
     }
     case "send": {
+      // Check for --group flag
+      if (process.argv[3] === "--group") {
+        const groupName = process.argv[4];
+        const groupMessage = process.argv[5];
+        if (!groupName || !groupMessage) {
+          console.error("Error: group name and message required");
+          console.error('Usage: send --group "Group Name" "message"');
+          process.exit(1);
+        }
+        const matches = findGroupChats(groupName);
+        if (matches.length === 0) {
+          console.error(`No group chat found matching "${groupName}"`);
+          process.exit(1);
+        }
+        if (matches.length > 1) {
+          // Check for exact match first
+          const exact = matches.find(
+            (m) => m.displayName.toLowerCase() === groupName.toLowerCase()
+          );
+          if (exact) {
+            console.log(`Sending to group "${exact.displayName}"...`);
+            await sendToGroup(exact.chatIdentifier, groupMessage);
+            console.log(`Message sent to group "${exact.displayName}"`);
+          } else {
+            console.log(`\nMultiple group chats match "${groupName}":\n`);
+            for (let i = 0; i < matches.length; i++) {
+              console.log(`  ${i + 1}. ${matches[i].displayName}`);
+            }
+            console.log(`\nBe more specific to select a group.`);
+            process.exit(1);
+          }
+        } else {
+          console.log(`Sending to group "${matches[0].displayName}"...`);
+          await sendToGroup(matches[0].chatIdentifier, groupMessage);
+          console.log(`Message sent to group "${matches[0].displayName}"`);
+        }
+        break;
+      }
+
       let recipient = process.argv[3];
       const message = process.argv[4];
       if (!recipient || !message) {
@@ -400,7 +430,83 @@ async function main() {
         usage();
         process.exit(1);
       }
-      // Resolve contact name to phone number if needed
+
+      // Check for comma-separated recipients (1:many mode)
+      if (recipient.includes(",") && !isDirectRecipient(recipient)) {
+        const names = recipient.split(",").map((n) => n.trim()).filter(Boolean);
+        if (names.length < 2) {
+          console.error("Error: provide at least two comma-separated names for multi-send");
+          process.exit(1);
+        }
+
+        const flag = process.argv[5];
+        const serviceOverride =
+          flag === "--sms" ? "SMS" as const :
+          flag === "--rcs" ? "RCS" as const :
+          flag === "--imessage" ? "iMessage" as const :
+          undefined;
+
+        console.log(`Sending to ${names.length} recipients...\n`);
+        const results: { name: string; status: string }[] = [];
+
+        for (const name of names) {
+          let resolvedRecipient = name;
+          let displayName = name;
+
+          if (!isDirectRecipient(name)) {
+            const matches = lookupContacts(name);
+            if (matches.length === 0) {
+              results.push({ name, status: "FAILED - no contact found" });
+              continue;
+            }
+            if (matches.length > 1) {
+              // Check for high-confidence match (exact first or full name)
+              const exactFull = matches.find(
+                (m) => m.name.toLowerCase() === name.toLowerCase()
+              );
+              const exactFirst = matches.find(
+                (m) => m.name.split(" ")[0].toLowerCase() === name.toLowerCase()
+              );
+              const best = exactFull ?? exactFirst;
+              if (!best || (matches.length > 1 && !exactFull && matches[0].name.split(" ")[0].toLowerCase() === matches[1].name.split(" ")[0].toLowerCase())) {
+                const preview = matches.slice(0, 3).map((m) => m.name).join(", ");
+                results.push({ name, status: `FAILED - ambiguous (${preview}${matches.length > 3 ? "..." : ""})` });
+                continue;
+              }
+              displayName = best.name;
+              resolvedRecipient = best.phone;
+              console.log(`  Resolved "${name}" -> ${best.name} (${best.phone})`);
+            } else {
+              const contact = matches[0];
+              displayName = contact.name;
+              resolvedRecipient = contact.phone;
+              console.log(`  Resolved "${name}" -> ${contact.name} (${contact.phone})`);
+            }
+          }
+
+          try {
+            const usedService = await sendMessage(resolvedRecipient, message, serviceOverride);
+            results.push({ name: displayName, status: `sent via ${usedService}` });
+          } catch (err: any) {
+            results.push({ name: displayName, status: `FAILED - ${err.message}` });
+          }
+        }
+
+        console.log();
+        for (const r of results) {
+          const icon = r.status.startsWith("FAILED") ? "x" : "ok";
+          console.log(`  [${icon}] ${r.name}: ${r.status}`);
+        }
+
+        const failed = results.filter((r) => r.status.startsWith("FAILED"));
+        if (failed.length > 0) {
+          console.log(`\n${failed.length} of ${names.length} sends failed.`);
+          process.exit(1);
+        }
+        break;
+      }
+
+      // Standard 1:1 send
       let displayName = recipient;
       if (!isDirectRecipient(recipient)) {
         const matches = lookupContacts(recipient);

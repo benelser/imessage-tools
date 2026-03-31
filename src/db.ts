@@ -784,6 +784,39 @@ export function inbox(limit = 15): InboxThread[] {
   }
 }
 
+export interface GroupChatInfo {
+  displayName: string;
+  chatIdentifier: string;
+}
+
+/**
+ * Find a group chat by display name (case-insensitive substring match).
+ * Returns all matches so the caller can disambiguate if needed.
+ */
+export function findGroupChats(name: string): GroupChatInfo[] {
+  const db = openChatDB();
+  try {
+    const rows = db
+      .query(
+        `SELECT display_name, chat_identifier
+         FROM chat
+         WHERE style = 43
+           AND display_name IS NOT NULL
+           AND length(display_name) > 0
+           AND LOWER(display_name) LIKE '%' || LOWER(?) || '%'
+         ORDER BY ROWID DESC`
+      )
+      .all(name) as any[];
+
+    return rows.map((r: any) => ({
+      displayName: r.display_name,
+      chatIdentifier: r.chat_identifier,
+    }));
+  } finally {
+    db.close();
+  }
+}
+
 export interface CatchupThread {
   chat: string;
   participants: string[];

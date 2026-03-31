@@ -2,6 +2,37 @@ import { openChatDB } from "./db";
 
 export type ServiceType = "iMessage" | "SMS" | "RCS";
 
+/**
+ * Send a message to a group chat by its chat_identifier (e.g. "chat61028630640742929").
+ * Uses AppleScript to target the chat by its full ID.
+ */
+export async function sendToGroup(
+  chatIdentifier: string,
+  message: string
+): Promise<void> {
+  const escapedMessage = message.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
+  // Group chats use the "any;+;" prefix in AppleScript IDs
+  const fullId = `iMessage;+;${chatIdentifier}`;
+  const script = `
+    tell application "Messages"
+      set targetChat to chat id "${fullId}"
+      send "${escapedMessage}" to targetChat
+    end tell
+  `;
+
+  const proc = Bun.spawn(["osascript", "-e", script], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(`Failed to send to group chat: ${stderr.trim()}`);
+  }
+}
+
 const SERVICE_PRIORITY: ServiceType[] = ["iMessage", "RCS", "SMS"];
 
 /**
