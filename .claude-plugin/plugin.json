@@ -1,6 +1,6 @@
 {
   "name": "imessage-tools",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Read, search, and send iMessages directly from Claude Code",
   "author": {
     "name": "belser"
@@ -8,6 +8,5 @@
   "homepage": "https://github.com/benelser/imessage-tools",
   "license": "MIT",
   "keywords": ["imessage", "messages", "sms", "macos"],
-  "skills": "./skills/",
-  "hooks": "./hooks/hooks.json"
+  "skills": "./skills/"
 }
