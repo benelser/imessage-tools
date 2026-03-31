@@ -11,7 +11,7 @@
       "name": "imessage-tools",
       "source": "./",
       "description": "Read, search, and send iMessages directly from Claude Code",
-      "version": "1.0.0"
+      "version": "2.0.0"
     }
   ]
 }
