@@ -99,32 +99,106 @@ async function main() {
         .filter((s) => s !== "You");
       const senderMap = resolveIdentifiers([...senderIds, ...reactionSenderIds]);
 
-      const now = Date.now();
-      const line = "─".repeat(50);
+      const WIDTH = process.stdout.columns || 80;
+      const INDENT = 4;
+      const RIGHT_MAX = Math.floor(WIDTH * 0.55); // max width for right-aligned text area
+
+      // Chronological order
+      const sorted = messages.reverse();
+
+      // Helper: format day label
+      function dayLabel(d: Date): string {
+        const now = new Date();
+        const todayStr = now.toDateString();
+        const yesterdayDate = new Date(now);
+        yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+        if (d.toDateString() === todayStr) return "Today";
+        if (d.toDateString() === yesterdayDate.toDateString()) return "Yesterday";
+        return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+      }
+
+      // Helper: center a string in the terminal width
+      function center(s: string): string {
+        const pad = Math.max(0, Math.floor((WIDTH - s.length) / 2));
+        return " ".repeat(pad) + s;
+      }
+
+      // Helper: format time of day
+      function timeOfDay(d: Date): string {
+        return d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+      }
+
+      let lastDate: string | null = null; // track day separators
+      let lastSender: string | null = null; // track consecutive same-sender
+      let lastMsgTime: number = 0; // track 30min gap for timestamps
 
       console.log();
-      for (const msg of messages.reverse()) {
+
+      for (let i = 0; i < sorted.length; i++) {
+        const msg = sorted[i];
         const d = new Date(msg.timestamp);
-        const diffDays = Math.floor((now - d.getTime()) / 86_400_000);
-        let time: string;
-        if (diffDays === 0)
-          time = d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-        else if (diffDays === 1)
-          time = "Yesterday " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-        else
-          time = d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) +
-            " " + d.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+        const dateStr = d.toDateString();
+
+        // Day separator
+        if (dateStr !== lastDate) {
+          if (lastDate !== null) console.log(); // extra blank before new day
+          const label = `── ${dayLabel(d)} ──`;
+          console.log(center(label));
+          console.log();
+          lastDate = dateStr;
+          lastSender = null; // reset sender tracking on new day
+          lastMsgTime = 0; // reset time tracking on new day
+        }
 
         const sender = msg.is_from_me
           ? "Me"
           : (senderMap.get(msg.sender) ?? msg.sender);
+        const senderKey = msg.is_from_me ? "__me__" : msg.sender;
         const text = msg.text ?? "(no content)";
         const reactions = msg.reactions ? ` ${formatReactions(msg.reactions, senderMap)}` : "";
+        const msgTime = d.getTime();
 
-        console.log(`  ${sender}  ${time}`);
-        console.log(`    ${text}${reactions}`);
-        console.log();
+        // Show timestamp if 30+ minutes since last message
+        const showTime = (msgTime - lastMsgTime) >= 30 * 60 * 1000;
+
+        // Show sender name only on first message in a consecutive run
+        const showSender = senderKey !== lastSender;
+
+        if (msg.is_from_me) {
+          // Right-aligned messages
+          if (showSender && showTime) {
+            // Blank line before a new sender block
+            if (lastSender !== null) console.log();
+          } else if (showSender) {
+            if (lastSender !== null) console.log();
+          }
+
+          const content = `${text}${reactions}`;
+          const timeSuffix = showTime ? `  ${timeOfDay(d)}` : "";
+          const line = `${content}${timeSuffix}`;
+          const pad = Math.max(0, WIDTH - line.length - 2);
+          console.log(" ".repeat(pad) + line);
+        } else {
+          // Left-aligned messages
+          if (showSender) {
+            if (lastSender !== null) console.log();
+            const header = showTime ? `${sender}  ${timeOfDay(d)}` : sender;
+            console.log(header);
+          } else if (showTime) {
+            // Time gap but same sender — show time inline
+            console.log();
+            console.log(`${sender}  ${timeOfDay(d)}`);
+          }
+
+          const content = `${text}${reactions}`;
+          console.log(" ".repeat(INDENT) + content);
+        }
+
+        lastSender = senderKey;
+        lastMsgTime = msgTime;
       }
+
+      console.log();
       break;
     }
     case "search": {
