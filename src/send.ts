@@ -83,6 +83,80 @@ export async function createGroupChat(
   }
 }
 
+/**
+ * Send a single message through Messages.app's compose pipeline so that any
+ * URL in the body is unfurled into a rich link preview (og:title, og:image,
+ * og:description) by the Link Presentation framework.
+ *
+ * Why this exists: AppleScript's plain `send` ships the message as raw text
+ * and bypasses Link Presentation, so the outgoing message arrives without a
+ * preview attachment. This routine instead opens the chat via the imessage://
+ * URL scheme with the body pre-populated, waits long enough for the OG fetch
+ * to complete in the compose field, then presses Return to send.
+ *
+ * Side effect: briefly steals focus to Messages.app (~6 seconds), then
+ * restores the previously frontmost app.
+ */
+function normalizeForUrlScheme(recipient: string): string {
+  // Emails pass through unchanged.
+  if (recipient.includes("@")) return recipient;
+  // Phone — the imessage:// URL scheme is intolerant of spaces, parens, and
+  // dashes. Strip formatting and emit E.164 where we can confidently infer it.
+  const digits = recipient.replace(/\D/g, "");
+  if (recipient.trim().startsWith("+")) return "+" + digits;
+  if (digits.length === 10) return "+1" + digits;
+  if (digits.length === 11 && digits.startsWith("1")) return "+" + digits;
+  return digits;
+}
+
+export async function sendWithPreview(
+  recipient: string,
+  message: string
+): Promise<void> {
+  const normalized = normalizeForUrlScheme(recipient);
+  // Escape for AppleScript string literal: backslash and double-quote.
+  const escapedMessage = message.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  // The recipient goes into a shell single-quoted string, so escape any single
+  // quotes by closing/reopening: ' -> '\''
+  const shellRecipient = normalized.replace(/'/g, "'\\''");
+
+  const script = `
+    tell application "System Events"
+      set frontApp to name of first application process whose frontmost is true
+    end tell
+
+    set the clipboard to "${escapedMessage}"
+
+    do shell script "open 'imessage://${shellRecipient}'"
+    delay 1.5
+
+    tell application "Messages" to activate
+    delay 0.6
+
+    tell application "System Events"
+      tell process "Messages"
+        keystroke "v" using command down
+        delay 6
+        key code 36
+      end tell
+    end tell
+
+    delay 0.5
+    tell application frontApp to activate
+  `;
+
+  const proc = Bun.spawn(["osascript", "-e", script], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+
+  const exitCode = await proc.exited;
+  if (exitCode !== 0) {
+    const stderr = await new Response(proc.stderr).text();
+    throw new Error(`Failed to send with preview: ${stderr.trim()}`);
+  }
+}
+
 const SERVICE_PRIORITY: ServiceType[] = ["iMessage", "RCS", "SMS"];
 
 /**

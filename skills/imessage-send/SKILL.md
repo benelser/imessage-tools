@@ -15,12 +15,16 @@ The CLI handles:
 - Service override with --sms, --rcs, or --imessage flags
 - Sending to multiple contacts at once (1:many, comma-separated names)
 - Sending to existing group chats by name (--group flag)
+- Rich link previews via --preview (routes through Messages.app compose so
+  URLs unfurl into og:title/og:image cards; briefly steals focus for ~6s
+  per send)
 
 Examples of how the user might invoke this:
 - `/imessage-send "Jane Doe" "Hey what's up?"`               (1:1 send)
 - `/imessage-send "John Smith" "Let's grab lunch"`            (1:1 send)
 - `/imessage-send +15551234567 "Hello!"`                      (1:1 by number)
 - `/imessage-send "Jane Doe" "Hello!" --rcs`                  (1:1 with service override)
+- `/imessage-send "Jane Doe" "https://example.com/post" --preview`  (URL with rich preview)
 - `/imessage-send "Jane, John, Bob" "Meeting at 3"`           (1:many individual sends)
 - `/imessage-send --group "Work Chat" "Hello team!"`          (existing group chat)
 

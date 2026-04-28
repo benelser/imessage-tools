@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { readMessages, readGroupMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, catchup, formatReactions, findGroupChats } from "./src/db";
-import { sendMessage, sendToGroup, createGroupChat } from "./src/send";
+import { sendMessage, sendToGroup, createGroupChat, sendWithPreview } from "./src/send";
 import { lookupContact, lookupContacts, isDirectRecipient, resolveIdentifiers } from "./src/contacts";
 
 const command = process.argv[2];
@@ -14,8 +14,11 @@ Commands:
   search <keyword> [limit]   Search messages by keyword
   catchup [hours]            Show messages since your last sent message
   contacts                   List all contacts by message count
-  send <name-or-number> <message> [--sms|--rcs|--imessage]
+  send <name-or-number> <message> [--sms|--rcs|--imessage] [--preview]
                              Send a message (auto-detects service)
+                             --preview routes through Messages.app compose so
+                             URLs unfurl into rich link previews (briefly
+                             steals focus for ~6s)
   send "Name1, Name2" <message>  Send same message to multiple contacts (1:many)
   send --group "Group Name" <message>  Send to an existing group chat
   create-group resolve "names..."    Resolve contacts for a new group chat
@@ -540,12 +543,13 @@ async function main() {
           process.exit(1);
         }
 
-        const flag = process.argv[5];
+        const flags = process.argv.slice(5);
         const serviceOverride =
-          flag === "--sms" ? "SMS" as const :
-          flag === "--rcs" ? "RCS" as const :
-          flag === "--imessage" ? "iMessage" as const :
+          flags.includes("--sms") ? "SMS" as const :
+          flags.includes("--rcs") ? "RCS" as const :
+          flags.includes("--imessage") ? "iMessage" as const :
           undefined;
+        const usePreview = flags.includes("--preview");
 
         console.log(`Sending to ${names.length} recipients...\n`);
         const results: { name: string; status: string }[] = [];
@@ -586,8 +590,13 @@ async function main() {
           }
 
           try {
-            const usedService = await sendMessage(resolvedRecipient, message, serviceOverride);
-            results.push({ name: displayName, status: `sent via ${usedService}` });
+            if (usePreview) {
+              await sendWithPreview(resolvedRecipient, message);
+              results.push({ name: displayName, status: "sent with preview" });
+            } else {
+              const usedService = await sendMessage(resolvedRecipient, message, serviceOverride);
+              results.push({ name: displayName, status: `sent via ${usedService}` });
+            }
           } catch (err: any) {
             results.push({ name: displayName, status: `FAILED - ${err.message}` });
           }
@@ -634,14 +643,21 @@ async function main() {
         displayName = contact.name;
         recipient = contact.phone;
       }
-      const flag = process.argv[5];
+      const flags = process.argv.slice(5);
       const serviceOverride =
-        flag === "--sms" ? "SMS" as const :
-        flag === "--rcs" ? "RCS" as const :
-        flag === "--imessage" ? "iMessage" as const :
+        flags.includes("--sms") ? "SMS" as const :
+        flags.includes("--rcs") ? "RCS" as const :
+        flags.includes("--imessage") ? "iMessage" as const :
         undefined;
-      const usedService = await sendMessage(recipient, message, serviceOverride);
-      console.log(`Message sent to ${displayName} via ${usedService}`);
+      const usePreview = flags.includes("--preview");
+
+      if (usePreview) {
+        await sendWithPreview(recipient, message);
+        console.log(`Message sent to ${displayName} with rich link preview`);
+      } else {
+        const usedService = await sendMessage(recipient, message, serviceOverride);
+        console.log(`Message sent to ${displayName} via ${usedService}`);
+      }
       break;
     }
     case "create-group": {
