@@ -26,6 +26,15 @@ Commands:
 `);
 }
 
+// --help / -h anywhere prints usage and exits before any database read or send. Without this, `read --help` parsed
+// "--help" as a limit, fell back to defaults and printed recent messages across every contact; `search --help` searched
+// for the literal "--help"; `send --help` treated it as a recipient.
+const HELP_FLAGS = new Set(["--help", "-h"]);
+if (process.argv.slice(2).some((a) => HELP_FLAGS.has(a)) || command === "help") {
+  usage();
+  process.exit(0);
+}
+
 async function main() {
   switch (command) {
     case "inbox": {
