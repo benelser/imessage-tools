@@ -221,6 +221,22 @@ bun run scripts/deploy.ts all       # both platforms + bun link
 bun run scripts/deploy.ts link      # just register global CLI
 ```
 
+### JSON primitives for agents
+
+Two machine-readable forms for scripts and agents. Both take an exact phone number or email, never a contact name, and
+never read or write beyond that one 1:1 conversation:
+
+```bash
+imessage-tools read --json --handle +15551234567 [--limit 50] [--after-rowid 1234]
+imessage-tools send +15551234567 "message" --json
+```
+
+- `read --json` prints `{handle, chats, messages}`, oldest first. Each message has a stable `rowid` and `guid`, `date`
+  (UTC), `is_from_me`, `text` (full, with `attributedBody` decoded), `service`, `reply_to_guid`, `associated_type` and
+  `associated_guid` (tapbacks), `edited` and `retracted`. `--after-rowid` returns only newer messages, for polling.
+- `send --json` prints only `{"sent": true, "service", "rowid", "guid"}` on stdout, with progress on stderr. `rowid` and
+  `guid` are `null` if the new message isn't visible in chat.db within 5 seconds.
+
 ## How it works
 
 - **Reading messages** — Queries `~/Library/Messages/chat.db` (SQLite) directly. No AppleScript needed for reads.

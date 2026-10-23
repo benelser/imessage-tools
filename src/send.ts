@@ -311,10 +311,16 @@ function resolveRecipientFormat(recipient: string): string {
   }
 }
 
+/** Every chat identifier a direct recipient may be stored under (the history match first). */
+export function recipientIdentifiers(recipient: string): string[] {
+  return [...new Set([resolveRecipientFormat(recipient), ...normalizePhone(recipient)])];
+}
+
 export async function sendMessage(
   recipient: string,
   message: string,
-  service?: ServiceType
+  service?: ServiceType,
+  log: (line: string) => void = console.log
 ): Promise<ServiceType> {
   // Normalize recipient to the format Messages.app expects
   const normalizedRecipient = resolveRecipientFormat(recipient);
@@ -350,10 +356,10 @@ export async function sendMessage(
   }
 
   for (const svc of order) {
-    console.log(`Trying ${svc}...`);
+    log(`Trying ${svc}...`);
     const ok = await trySend(normalizedRecipient, message, svc);
     if (ok) return svc;
-    console.log(`${svc} failed, falling back...`);
+    log(`${svc} failed, falling back...`);
   }
 
   throw new Error(
