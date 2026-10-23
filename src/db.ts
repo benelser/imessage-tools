@@ -1033,3 +1033,127 @@ export function catchup(hours?: number): CatchupResult {
     db.close();
   }
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// Machine-readable primitives for agents: one conversation by exact handle, cursor polling, and the ids of a message
+// just sent. They never resolve contact names and never read more than the one 1:1 chat they are given.
+
+export interface ConversationMessage {
+  rowid: number;
+  guid: string;
+  date: string;                       // ISO 8601, UTC
+  is_from_me: boolean;
+  handle: string | null;              // the other side's handle on incoming messages
+  service: string | null;             // iMessage, SMS, RCS
+  text: string | null;                // full text (attributedBody decoded); tapbacks read as "[Loved]" and the like
+  reply_to_guid: string | null;       // thread_originator_guid: the message this one replies to
+  associated_type: number | null;     // tapback / sticker type (2000-3006); null for an ordinary message
+  associated_guid: string | null;     // the message a tapback points at
+  edited: boolean;
+  retracted: boolean;                 // unsent
+  chat_guid: string;
+}
+
+export interface Conversation {
+  handle: string;
+  chats: { guid: string; service: string | null }[];
+  messages: ConversationMessage[];
+}
+
+function optionalColumns(db: Database, wanted: string[]): Record<string, string> {
+  const have = new Set((db.query("PRAGMA table_info(message)").all() as any[]).map((c) => c.name as string));
+  return Object.fromEntries(wanted.map((c) => [c, have.has(c) ? `m.${c}` : `NULL`]));
+}
+
+/** One 1:1 conversation by its exact handle (the chat identifier: a phone number or email), oldest first. Without
+ *  afterRowid it returns the latest `limit` messages; with it, up to `limit` messages after that ROWID (polling). */
+export function readConversation(handle: string, opts: { limit?: number; afterRowid?: number } = {}): Conversation {
+  const limit = Math.max(1, Math.min(opts.limit ?? 50, 1000));
+  const db = openChatDB();
+  try {
+    const chats = db
+      .query(`SELECT ROWID as id, guid, service_name FROM chat WHERE chat_identifier = ? AND style = 45`)
+      .all(handle) as any[];
+    if (chats.length === 0) return { handle, chats: [], messages: [] };
+    const col = optionalColumns(db, ["thread_originator_guid", "date_edited", "date_retracted", "associated_message_guid"]);
+    const cursor = opts.afterRowid !== undefined;
+    const ids = chats.map((c) => c.id as number);
+    const rows = db
+      .query(
+        `SELECT m.ROWID as rowid, m.guid, m.date as coredate, m.is_from_me, m.text, m.attributedBody,
+           m.cache_has_attachments, m.associated_message_type, m.associated_message_emoji, m.balloon_bundle_id,
+           m.is_audio_message, m.service, ${col.thread_originator_guid} as reply_to_guid,
+           ${col.associated_message_guid} as associated_guid, ${col.date_edited} as date_edited,
+           ${col.date_retracted} as date_retracted, h.id as handle_id, c.guid as chat_guid,
+           (SELECT a.mime_type FROM message_attachment_join maj JOIN attachment a ON a.ROWID = maj.attachment_id
+             WHERE maj.message_id = m.ROWID LIMIT 1) as mime_type,
+           (SELECT a.transfer_name FROM message_attachment_join maj JOIN attachment a ON a.ROWID = maj.attachment_id
+             WHERE maj.message_id = m.ROWID LIMIT 1) as transfer_name
+         FROM message m
+         JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+         JOIN chat c ON c.ROWID = cmj.chat_id
+         LEFT JOIN handle h ON h.ROWID = m.handle_id
+         WHERE cmj.chat_id IN (${ids.map(() => "?").join(",")}) AND m.ROWID > ?
+         GROUP BY m.ROWID
+         ORDER BY m.ROWID ${cursor ? "ASC" : "DESC"}
+         LIMIT ?`
+      )
+      .all(...ids, opts.afterRowid ?? 0, limit) as any[];
+    if (!cursor) rows.reverse();
+    return {
+      handle,
+      chats: chats.map((c) => ({ guid: c.guid as string, service: (c.service_name as string) ?? null })),
+      messages: rows.map((r) => ({
+        rowid: r.rowid as number,
+        guid: r.guid as string,
+        date: coredateToISO(r.coredate),
+        is_from_me: !!r.is_from_me,
+        handle: r.is_from_me ? null : ((r.handle_id as string) ?? null),
+        service: (r.service as string) ?? null,
+        text: resolveText(r),
+        reply_to_guid: (r.reply_to_guid as string) || null,
+        associated_type: (r.associated_message_type as number) || null,
+        associated_guid: (r.associated_guid as string) || null,
+        edited: !!r.date_edited,
+        retracted: !!r.date_retracted,
+        chat_guid: r.chat_guid as string,
+      })),
+    };
+  } finally {
+    db.close();
+  }
+}
+
+/** The highest message ROWID now: take it before a send, then look for the new row above it. */
+export function maxMessageRowid(): number {
+  const db = openChatDB();
+  try {
+    return ((db.query("SELECT MAX(ROWID) as r FROM message").get() as any)?.r as number) ?? 0;
+  } finally {
+    db.close();
+  }
+}
+
+/** The first outgoing message above `afterRowid` in a 1:1 chat with one of these identifiers whose text is `text`. */
+export function findOutgoing(identifiers: string[], text: string, afterRowid: number): { rowid: number; guid: string } | null {
+  const db = openChatDB();
+  try {
+    const rows = db
+      .query(
+        `SELECT m.ROWID as rowid, m.guid, m.text, m.attributedBody, m.cache_has_attachments, m.associated_message_type,
+           m.balloon_bundle_id, m.is_audio_message
+         FROM message m
+         JOIN chat_message_join cmj ON cmj.message_id = m.ROWID
+         JOIN chat c ON c.ROWID = cmj.chat_id
+         WHERE m.is_from_me = 1 AND m.ROWID > ? AND c.style = 45
+           AND c.chat_identifier IN (${identifiers.map(() => "?").join(",")})
+         ORDER BY m.ROWID ASC`
+      )
+      .all(afterRowid, ...identifiers) as any[];
+    const want = text.trim();
+    const hit = rows.find((r) => resolveText(r) === want);
+    return hit ? { rowid: hit.rowid as number, guid: hit.guid as string } : null;
+  } finally {
+    db.close();
+  }
+}

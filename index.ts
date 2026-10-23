@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import { readMessages, readGroupMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, catchup, formatReactions, findGroupChats } from "./src/db";
-import { sendMessage, sendToGroup, createGroupChat, sendWithPreview } from "./src/send";
+import { readMessages, readGroupMessages, searchMessages, searchMessagesWithContext, listContacts, inbox, catchup, formatReactions, findGroupChats, readConversation, maxMessageRowid, findOutgoing } from "./src/db";
+import { sendMessage, sendToGroup, createGroupChat, sendWithPreview, recipientIdentifiers } from "./src/send";
 import { lookupContact, lookupContacts, isDirectRecipient, resolveIdentifiers } from "./src/contacts";
 
 const command = process.argv[2];
@@ -11,6 +11,11 @@ function usage() {
 Commands:
   inbox [limit]              Show conversations (like iMessage sidebar)
   read [limit] [contact]     Read recent messages
+  read --json --handle <phone-or-email> [--limit N] [--after-rowid R]
+                             One 1:1 conversation as JSON, oldest first, with
+                             stable ids (rowid, guid), reply/tapback/edit/unsend
+                             fields. --after-rowid returns only newer messages
+                             (polling). Exact handle only; never reads other chats
   search <keyword> [limit]   Search messages by keyword
   catchup [hours]            Show messages since your last sent message
   contacts                   List all contacts by message count
@@ -19,6 +24,10 @@ Commands:
                              --preview routes through Messages.app compose so
                              URLs unfurl into rich link previews (briefly
                              steals focus for ~6s)
+  send <phone-or-email> <message> --json
+                             Send, then print {"sent","service","rowid","guid"}
+                             for the new message (exact handle only; rowid and
+                             guid are null if it isn't visible within 5 s)
   send "Name1, Name2" <message>  Send same message to multiple contacts (1:many)
   send --group "Group Name" <message>  Send to an existing group chat
   create-group resolve "names..."    Resolve contacts for a new group chat
@@ -33,6 +42,18 @@ const HELP_FLAGS = new Set(["--help", "-h"]);
 if (process.argv.slice(2).some((a) => HELP_FLAGS.has(a)) || command === "help") {
   usage();
   process.exit(0);
+}
+
+// The value after a flag, or undefined. A missing value or another flag in its place reads as undefined.
+function flagValue(name: string): string | undefined {
+  const i = process.argv.indexOf(name);
+  const v = i >= 0 ? process.argv[i + 1] : undefined;
+  return v === undefined || v.startsWith("--") ? undefined : v;
+}
+
+function refuse(message: string): never {
+  console.error(`Error: ${message}`);
+  process.exit(2);
 }
 
 async function main() {
@@ -111,6 +132,23 @@ async function main() {
       break;
     }
     case "read": {
+      if (process.argv.includes("--json")) {
+        // Agents' primitive: one conversation, by exact handle. It never falls back to a cross-contact read.
+        const handle = flagValue("--handle");
+        if (!handle || handle.includes(",") || !isDirectRecipient(handle))
+          refuse("read --json needs --handle <exact phone number or email>; it never reads across contacts");
+        const limitArg = flagValue("--limit");
+        const afterArg = flagValue("--after-rowid");
+        if (limitArg !== undefined && !/^\d+$/.test(limitArg)) refuse("--limit must be a whole number");
+        if (afterArg !== undefined && !/^\d+$/.test(afterArg)) refuse("--after-rowid must be a whole number");
+        if (process.argv.includes("--after-rowid") && afterArg === undefined) refuse("--after-rowid needs a value");
+        const conv = readConversation(handle, {
+          limit: limitArg === undefined ? undefined : parseInt(limitArg),
+          afterRowid: afterArg === undefined ? undefined : parseInt(afterArg),
+        });
+        console.log(JSON.stringify(conv));
+        break;
+      }
       // Check for --group flag
       if (process.argv[3] === "--group") {
         const groupName = process.argv[4];
@@ -542,6 +580,30 @@ async function main() {
         console.error("Error: recipient and message required");
         usage();
         process.exit(1);
+      }
+
+      if (process.argv.includes("--json")) {
+        // Agents' primitive: an exact handle only (no name lookup, no 1:many), and only JSON on stdout.
+        if (recipient.includes(",") || !isDirectRecipient(recipient) || message.startsWith("--"))
+          refuse("send --json needs an exact phone number or email and a message; it never resolves contact names");
+        const flags = process.argv.slice(5);
+        const serviceOverride =
+          flags.includes("--sms") ? "SMS" as const :
+          flags.includes("--rcs") ? "RCS" as const :
+          flags.includes("--imessage") ? "iMessage" as const :
+          undefined;
+        const before = maxMessageRowid();
+        let usedService: string | null = null;
+        if (flags.includes("--preview")) await sendWithPreview(recipient, message);
+        else usedService = await sendMessage(recipient, message, serviceOverride, (line) => console.error(line));
+        const ids = recipientIdentifiers(recipient);
+        let found: { rowid: number; guid: string } | null = null;
+        for (let i = 0; i < 20 && !found; i++) {
+          found = findOutgoing(ids, message, before);
+          if (!found) await Bun.sleep(250);
+        }
+        console.log(JSON.stringify({ sent: true, service: usedService, rowid: found?.rowid ?? null, guid: found?.guid ?? null }));
+        break;
       }
 
       // Check for comma-separated recipients (1:many mode)
